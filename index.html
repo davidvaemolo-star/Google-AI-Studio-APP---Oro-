@@ -1,0 +1,52 @@
+
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>OC6 Haptic Pacer</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+      tailwind.config = {
+        theme: {
+          extend: {
+            colors: {
+              'ocean-blue': '#001f3f',
+              'charcoal': '#2C2C2C',
+              'accent-cyan': '#00aaff',
+              'accent-cyan-hover': '#0099e6',
+              'light-gray': '#cccccc',
+              'zone-green-start': '#10b981',
+              'zone-green-end': '#34d399',
+              'zone-yellow-start': '#f59e0b',
+              'zone-yellow-end': '#fbbf24',
+              'zone-red-start': '#ef4444',
+              'zone-red-end': '#f87171',
+            },
+            keyframes: {
+              'pulse-slow': {
+                '50%': { transform: 'scale(1.1)' }
+              }
+            },
+            animation: {
+              'pulse-slow': 'pulse-slow 2s ease-in-out infinite',
+            }
+          },
+        },
+      }
+    </script>
+  <script type="importmap">
+{
+  "imports": {
+    "react/": "https://aistudiocdn.com/react@^19.2.0/",
+    "react": "https://aistudiocdn.com/react@^19.2.0",
+    "react-dom/": "https://aistudiocdn.com/react-dom@^19.2.0/"
+  }
+}
+</script>
+</head>
+  <body class="bg-charcoal text-white">
+    <div id="root"></div>
+  </body>
+</html>

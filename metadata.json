@@ -1,0 +1,5 @@
+{
+  "name": "OC6 Haptic Pacer",
+  "description": "An application for an outrigger canoe (OC6) team to configure and manage training zones for haptic feedback devices, simulating stroke rate synchronization.",
+  "requestFramePermissions": []
+}
