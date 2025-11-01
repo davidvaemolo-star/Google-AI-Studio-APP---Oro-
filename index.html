@@ -26,10 +26,15 @@
             keyframes: {
               'pulse-slow': {
                 '50%': { transform: 'scale(1.1)' }
+              },
+              'spin': {
+                'from': { transform: 'rotate(0deg)' },
+                'to': { transform: 'rotate(360deg)' },
               }
             },
             animation: {
               'pulse-slow': 'pulse-slow 2s ease-in-out infinite',
+              'spin': 'spin 1s linear infinite',
             }
           },
         },
