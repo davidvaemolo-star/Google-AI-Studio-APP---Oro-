@@ -1,4 +1,35 @@
-import React, { useState, useCallback, useMemo } from 'react';
+Scaffold(
+    bottomBar = {
+        NavigationBar {
+            val currentRoute = navController.currentBackStackEntryAsState().value?.destination?.route
+            items.forEach { screen ->
+                NavigationBarItem(
+                    selected = currentRoute == screen.route,
+                    onClick = {
+                        if (currentRoute != screen.route) {
+                            navController.navigate(screen.route) {
+                                popUpTo(navController.graph.startDestinationId) { saveState = true }
+                                launchSingleTop = true
+                                restoreState = true
+                            }
+                        }
+                    },
+                    icon = { Icon(screen.icon, contentDescription = screen.label) },
+                    label = { Text(screen.label) }
+                )
+            }
+        }
+    }
+) { padding ->
+    NavHost(
+        navController = navController,
+        startDestination = Screen.Connection.route,
+        modifier = Modifier.padding(padding)
+    ) {
+        composable(Screen.Connection.route) { ConnectionScreen() }
+        composable(Screen.Zone.route) { ZoneScreen() }
+    }
+}import React, { useState, useCallback, useMemo } from 'react';
 import type { Zone, HapticDevice } from './types';
 import { MAX_ZONES, MIN_SPM } from './constants';
 import { ZoneBlock } from './components/ZoneBlock';
