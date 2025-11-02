@@ -1,0 +1,19 @@
+{
+    "logs": [
+        {
+            "outputFile": "com.orotrain.oro.app-mergeDebugResources-59:/values-ldltr-v21/values-ldltr-v21.xml",
+            "map": [
+                {
+                    "source": "C:\\Users\\franq\\.gradle\\caches\\9.0-milestone-1\\transforms\\267c81a3e8b782c037262f8f60052e51\\transformed\\appcompat-1.6.1\\res\\values-ldltr-v21\\values-ldltr-v21.xml",
+                    "from": {
+                        "startLines": "2",
+                        "startColumns": "4",
+                        "startOffsets": "55",
+                        "endColumns": "112",
+                        "endOffsets": "163"
+                    }
+                }
+            ]
+        }
+    ]
+}
