@@ -129,6 +129,7 @@ export const ConnectionScreen: React.FC<ConnectionScreenProps> = ({ devices, set
   const [isScanning, setIsScanning] = useState(false);
   const [draggingIndex, setDraggingIndex] = useState<number | null>(null);
   const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
+  const [seatOrderLocked, setSeatOrderLocked] = useState(true);
 
   const { connectedDevices, otherDevices } = useMemo(() => {
     const connected = devices
@@ -214,10 +215,14 @@ export const ConnectionScreen: React.FC<ConnectionScreenProps> = ({ devices, set
   const handleDragEnd = useCallback(() => {
     setDraggingIndex(null);
     setDragOverIndex(null);
-  }, []);
+  }, []);  
   
   const handleDragOver = (e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault();
+  };
+
+  const toggleSeatOrderLock = () => {
+    setSeatOrderLocked(prev => !prev);
   };
 
   return (
@@ -253,11 +258,22 @@ export const ConnectionScreen: React.FC<ConnectionScreenProps> = ({ devices, set
               <h3 className="text-2xl font-bold text-accent-cyan mb-3">Assign Seats</h3>
               <div className="bg-charcoal p-4 rounded-lg mb-5 border border-white/10">
                 <div className="flex justify-center items-center text-white/80 space-x-4">
+                  <button
+                    onClick={toggleSeatOrderLock}
+                    className="px-4 py-2 bg-white/15 text-white rounded-lg font-semibold hover:bg-white/25 transition-colors"
+                  >
+                    {seatOrderLocked ? 'Unlock Seat Order' : 'Lock Seat Order'}
+                  </button>
                   <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-8 h-8">
                       <path strokeLinecap="round" strokeLinejoin="round" d="M3 7.5 7.5 3m0 0L12 7.5M7.5 3v13.5m13.5 0L16.5 21m0 0L12 16.5m4.5 4.5V7.5" />
                     </svg>
                   <div className="text-lg font-semibold uppercase tracking-wider">Drag to Order</div>
                 </div>
+                {seatOrderLocked && (
+                  <p className="text-sm text-white/60 mt-3">
+                    Seat order locked. Unlock to rearrange connected devices.
+                  </p>
+                )}
               </div>
               
               {connectedDevices.length > 0 ? (
@@ -272,13 +288,21 @@ export const ConnectionScreen: React.FC<ConnectionScreenProps> = ({ devices, set
                         key={device.id} 
                         device={device} 
                         onAction={handleDeviceAction}
-                        onDragStart={(e) => handleDragStart(e, index)}
-                        onDragEnter={() => handleDragEnter(index)}
-                        onDragLeave={handleDragLeave}
+                        onDragStart={(e) => {
+                          if (!seatOrderLocked) handleDragStart(e, index);
+                        }}
+                        onDragEnter={() => {
+                          if (!seatOrderLocked) handleDragEnter(index);
+                        }}
+                        onDragLeave={() => {
+                          if (!seatOrderLocked) handleDragLeave();
+                        }}
                         onDragOver={handleDragOver}
-                        onDrop={handleDrop}
+                        onDrop={() => {
+                          if (!seatOrderLocked) handleDrop();
+                        }}
                         onDragEnd={handleDragEnd}
-                        isDraggable={true}
+                        isDraggable={!seatOrderLocked}
                         isDragging={draggingIndex === index}
                         isDragOver={dragOverIndex === index}
                         seatNumber={index + 1}

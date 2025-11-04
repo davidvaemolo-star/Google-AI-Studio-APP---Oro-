@@ -1,0 +1,255 @@
+================================================================================
+  ORO HAPTIC PADDLE - QUICK REFERENCE CARD
+================================================================================
+
+BLE DEVICE NAME
+---------------
+Format: Oro-XXXX (where XXXX = last 4 hex chars of MAC address)
+Example: Oro-A4F3
+
+
+SERVICE UUIDs
+-------------
+Oro Haptic Service:  12340000-1234-5678-1234-56789abcdef0
+Battery Service:     0000180F-0000-1000-8000-00805F9B34FB
+
+
+CHARACTERISTIC UUIDs
+--------------------
+Haptic Control (W):      12340001-1234-5678-1234-56789abcdef0
+Zone Settings (W):       12340002-1234-5678-1234-56789abcdef0
+Device Status (R/N):     12340003-1234-5678-1234-56789abcdef0
+Connection Status (R/N): 12340004-1234-5678-1234-56789abcdef0
+Battery Level (R/N):     00002A19-0000-1000-8000-00805F9B34FB
+
+
+HAPTIC COMMANDS (Byte 0)
+-------------------------
+0x00 = STOP
+0x01 = SINGLE_PULSE
+0x02 = START_TRAINING
+0x03 = PAUSE_TRAINING
+0x04 = RESUME_TRAINING
+0x05 = COMPLETE_TRAINING
+0x06 = TEST_PATTERN
+
+
+HAPTIC PATTERNS (Byte 4)
+-------------------------
+1  = Strong Click (default training)
+2  = Sharp Click
+3  = Soft Click
+12 = Double Click
+13 = Triple Click
+24 = Long Alert (750ms)
+
+
+DEVICE STATES (Status Byte 0)
+------------------------------
+0x00 = IDLE (not configured)
+0x01 = READY (configured, can start)
+0x02 = TRAINING (actively running)
+0x03 = PAUSED (training paused)
+0x04 = COMPLETE (training finished)
+0xFF = ERROR (hardware error)
+
+
+ZONE COLOR CODES (Zone Settings Byte 5)
+----------------------------------------
+0x01 = Recovery (Light Blue #64B5F6)
+0x02 = Endurance (Green #81C784)
+0x03 = Tempo (Yellow #FFD54F)
+0x04 = Threshold (Orange #FFB74D)
+0x05 = VO2 Max (Red #E57373)
+0x06 = Anaerobic (Dark Red #F44336)
+
+
+PIN CONNECTIONS
+---------------
+DRV2605L → XIAO:
+  VIN → 3.3V (⚠️ NOT 5V!)
+  GND → GND
+  SDA → D4 (pin 4)
+  SCL → D5 (pin 5)
+  OUT+ → Motor Red Wire
+  OUT- → Motor Black Wire
+
+Battery → XIAO:
+  Red (+) → BAT+
+  Black (-) → BAT-
+
+
+HAPTIC CONTROL FORMAT (5 bytes, Write)
+---------------------------------------
+Byte 0: Command (0x00-0x06)
+Byte 1: Intensity (0-100)
+Byte 2: Duration LSB (unused, set to 0)
+Byte 3: Duration MSB (unused, set to 0)
+Byte 4: Pattern (1-51)
+
+Example - Start Training:
+  [0x02, 100, 0, 0, 1]
+
+Example - Test Haptic:
+  [0x06, 80, 0, 0, 12]  // Test double-click at 80%
+
+
+ZONE SETTINGS FORMAT (6 bytes, Write)
+--------------------------------------
+Byte 0: Strokes LSB (uint16 little-endian)
+Byte 1: Strokes MSB
+Byte 2: Sets (uint8)
+Byte 3: SPM LSB (uint16 little-endian)
+Byte 4: SPM MSB
+Byte 5: Zone Color (0x01-0x06)
+
+Example - 10 strokes, 3 sets, 20 SPM, Endurance:
+  [0x0A, 0x00, 0x03, 0x14, 0x00, 0x02]
+   ^10        ^3    ^20         ^green
+
+
+DEVICE STATUS FORMAT (5 bytes, Read/Notify)
+--------------------------------------------
+Byte 0: State (0x00-0xFF)
+Byte 1: Current Stroke LSB (uint16 little-endian)
+Byte 2: Current Stroke MSB
+Byte 3: Current Set (uint8)
+Byte 4: Battery Level (0-100)
+
+Example - Training in progress:
+  [0x02, 0x05, 0x00, 0x01, 0x64]
+   ^TRAINING  ^5         ^set1  ^100%
+
+
+KOTLIN CODE SNIPPETS
+---------------------
+
+// Start Training
+val cmd = byteArrayOf(0x02, 100, 0, 0, 1)
+hapticControlChar.value = cmd
+bluetoothGatt?.writeCharacteristic(hapticControlChar)
+
+// Configure Zone
+val zone = ByteBuffer.allocate(6).apply {
+    order(ByteOrder.LITTLE_ENDIAN)
+    putShort(10.toShort())   // strokes
+    put(3.toByte())          // sets
+    putShort(20.toShort())   // SPM
+    put(0x02.toByte())       // color
+}.array()
+zoneSettingsChar.value = zone
+bluetoothGatt?.writeCharacteristic(zoneSettingsChar)
+
+// Parse Status
+val state = value[0].toInt()
+val stroke = (value[1].toInt() and 0xFF) or
+             ((value[2].toInt() and 0xFF) shl 8)
+val set = value[3].toInt() and 0xFF
+val battery = value[4].toInt() and 0xFF
+
+
+TIMING REFERENCE
+----------------
+SPM to Interval:
+  20 SPM = 3000ms (3 seconds per stroke)
+  30 SPM = 2000ms (2 seconds per stroke)
+  40 SPM = 1500ms (1.5 seconds per stroke)
+  60 SPM = 1000ms (1 second per stroke)
+
+Formula: interval_ms = 60000 / SPM
+
+
+SERIAL MONITOR COMMANDS
+------------------------
+Baud Rate: 115200
+Expected startup message:
+  "=== Oro Haptic Paddle Firmware ==="
+  "Initializing DRV2605L haptic driver..."
+  "Scanning I2C bus... FOUND at 0x5A"
+  "BLE initialized successfully"
+  "Advertising as: Oro-XXXX"
+
+
+TROUBLESHOOTING
+---------------
+Device not found:
+  - Check BLE permissions (BLUETOOTH_SCAN, BLUETOOTH_CONNECT)
+  - Check location services enabled
+  - Verify device is powered on
+  - Check battery charge level
+
+Motor not vibrating:
+  - Verify DRV2605L VIN is 3.3V (NOT 5V!)
+  - Check motor connections (OUT+/OUT-)
+  - Upload HapticTest.ino to test hardware
+  - Check I2C connections (SDA=D4, SCL=D5)
+
+Services not discovered:
+  - Add 600ms delay before discoverServices()
+  - Check connection status
+  - Verify firmware uploaded correctly
+  - Check Serial Monitor for errors
+
+Notifications not received:
+  - Enable notifications with descriptor write
+  - Use ENABLE_NOTIFICATION_VALUE (not INDICATION)
+  - UUID: 00002902-0000-1000-8000-00805f9b34fb
+
+
+FILES REFERENCE
+---------------
+OroHapticFirmware.ino    - Main firmware (upload to device)
+HapticTest.ino           - Hardware diagnostic test
+BLE_PROTOCOL.md          - Complete protocol specification
+INTEGRATION_GUIDE.md     - Android integration quick reference
+AndroidIntegration.kt    - Complete BleManager example
+WIRING.md                - Hardware wiring diagrams
+README.md                - Firmware documentation
+libraries.txt            - Required Arduino libraries
+SUMMARY.md               - Complete delivery summary
+QUICK_REFERENCE.txt      - This file
+
+
+ARDUINO SETUP
+-------------
+1. Install Seeed nRF52 Boards:
+   Preferences → Board Manager URLs:
+   https://files.seeedstudio.com/arduino/package_seeeduino_boards_index.json
+
+2. Install Libraries:
+   - ArduinoBLE (v1.3.6+)
+   - Adafruit DRV2605 Library (v1.2.2+)
+
+3. Select Board:
+   Tools → Board → Seeed XIAO nRF52840 Sense
+
+4. Upload:
+   Open OroHapticFirmware.ino → Click Upload
+
+
+POWER CONSUMPTION
+-----------------
+Idle (advertising): ~5mA
+Connected (idle): ~8mA
+Haptic pulse: ~80mA peak
+Average (20 SPM): ~12mA
+
+Battery Life (1000mAh):
+  Idle: ~125 hours
+  Training 20 SPM: ~80 hours
+  Training 40 SPM: ~60 hours
+
+
+TESTING PROCEDURE
+-----------------
+1. Upload HapticTest.ino → Verify hardware
+2. Upload OroHapticFirmware.ino → Verify BLE
+3. Scan with nRF Connect → Verify services
+4. Connect from Android app → Test commands
+5. Start training → Verify timing and progress
+6. Monitor battery → Verify battery reporting
+
+
+================================================================================
+Oro Haptic Paddle Firmware v1.0 | 2025-11-02
+================================================================================

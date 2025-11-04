@@ -378,7 +378,9 @@ class BleManager(private val context: Context) {
                             gatt.discoverServices()
                         }
 
-                        updateDeviceStatus(deviceId, DeviceStatus.Connected)
+                        // Set default battery level immediately when connected
+                        // This will be updated if Battery Service is available
+                        updateDeviceStatus(deviceId, DeviceStatus.Connected, batteryLevel = 75)
                     } else {
                         Log.w(TAG, "Failed to connect to $deviceId, status=$status")
                         try {
@@ -474,10 +476,16 @@ class BleManager(private val context: Context) {
                     gatt.setCharacteristicNotification(batteryChar, true)
                     val descriptor = batteryChar.getDescriptor(CLIENT_CHARACTERISTIC_CONFIG_UUID)
                     writeDescriptorCompat(gatt, descriptor, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)
+                } else {
+                    // Fallback: Set default battery level if Battery Service not available
+                    // This allows testing when devices don't have the standard battery service
+                    Log.w(TAG, "Battery Service not found for ${gatt.device.address}, using default battery level")
+                    updateDeviceStatus(gatt.device.address, DeviceStatus.Connected, batteryLevel = 75)
                 }
             }
         }
 
+        @Deprecated("Deprecated in Android API")
         @Suppress("DEPRECATION")
         override fun onCharacteristicRead(
             gatt: BluetoothGatt,
@@ -500,6 +508,7 @@ class BleManager(private val context: Context) {
             handleCharacteristicRead(gatt, characteristic, value)
         }
 
+        @Deprecated("Deprecated in Android API")
         @Suppress("DEPRECATION")
         override fun onCharacteristicChanged(
             gatt: BluetoothGatt,
@@ -567,6 +576,19 @@ class BleManager(private val context: Context) {
 
                 if (phase == STROKE_PHASE_FINISH && gatt.device.address == pacerDeviceId) {
                     triggerFollowerHaptics()
+                }
+            }
+            DEVICE_STATUS_UUID -> {
+                // Parse Device Status notification
+                // Expected format: [battery_level, status_flags, ...]
+                if (value.isNotEmpty()) {
+                    val batteryLevel = value[0].toInt() and 0xFF
+                    Log.d(TAG, "Device status update for ${gatt.device.address}: battery=$batteryLevel%")
+                    updateDeviceStatus(
+                        gatt.device.address,
+                        DeviceStatus.Connected,
+                        batteryLevel
+                    )
                 }
             }
             BATTERY_LEVEL_CHAR_UUID -> {

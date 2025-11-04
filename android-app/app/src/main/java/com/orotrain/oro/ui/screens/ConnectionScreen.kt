@@ -15,11 +15,14 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Lock
+import androidx.compose.material.icons.rounded.LockOpen
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
@@ -42,7 +45,12 @@ fun ConnectionScreen(
     onScan: () -> Unit,
     onToggleDevice: (String) -> Unit,
     onReorder: (Int, Int) -> Unit,
-    modifier: Modifier = Modifier
+    isSeatOrderLocked: Boolean,
+    onToggleSeatLock: () -> Unit,
+    onConnectAll: () -> Unit = {},
+    modifier: Modifier = Modifier,
+    onStartCalibration: ((String) -> Unit)? = null,
+    onStopCalibration: ((String) -> Unit)? = null
 ) {
     val connectedDevices = remember(state.devices) {
         state.devices.filter { it.status == DeviceStatus.Connected }
@@ -52,7 +60,9 @@ fun ConnectionScreen(
     }
 
     val reorderableState = rememberReorderableLazyListState(onMove = { from, to ->
-        onReorder(from.index, to.index)
+        if (!isSeatOrderLocked) {
+            onReorder(from.index, to.index)
+        }
     })
 
     val scrollState = rememberScrollState()
@@ -94,6 +104,17 @@ fun ConnectionScreen(
             }
         }
 
+        // Connect All button (only show if there are disconnected devices)
+        val disconnectedDevicesCount = otherDevices.count { it.status == DeviceStatus.Disconnected }
+        if (disconnectedDevicesCount > 0) {
+            OutlinedButton(
+                onClick = onConnectAll,
+                modifier = Modifier.fillMaxWidth(0.6f)
+            ) {
+                Text("Connect All ($disconnectedDevicesCount)")
+            }
+        }
+
         if (state.devices.isEmpty()) {
             Text(
                 text = "Tap Scan to discover haptic devices.",
@@ -110,13 +131,36 @@ fun ConnectionScreen(
                     style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
                     color = AccentCyan
                 )
+                if (connectedDevices.isNotEmpty()) {
+                    OutlinedButton(
+                        onClick = onToggleSeatLock,
+                        modifier = Modifier.align(Alignment.End)
+                    ) {
+                        Icon(
+                            imageVector = if (isSeatOrderLocked) Icons.Rounded.Lock else Icons.Rounded.LockOpen,
+                            contentDescription = null,
+                            modifier = Modifier.padding(end = 8.dp)
+                        )
+                        Text(text = if (isSeatOrderLocked) "Unlock Seat Order" else "Lock Seat Order")
+                    }
+                    if (isSeatOrderLocked) {
+                        Text(
+                            text = "Seat order locked. Unlock to rearrange device positions.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.7f),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(top = 8.dp, bottom = 4.dp)
+                        )
+                    }
+                }
                 LazyColumn(
                     state = reorderableState.listState,
                     modifier = Modifier
                         .fillMaxWidth()
                         .heightIn(max = 420.dp)
                         .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.4f))
-                        .reorderable(reorderableState),
+                        .then(if (isSeatOrderLocked) Modifier else Modifier.reorderable(reorderableState)),
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                     contentPadding = PaddingValues(vertical = 8.dp)
                 ) {
@@ -130,16 +174,25 @@ fun ConnectionScreen(
                                 connectedDevices.lastIndex -> if (connectedDevices.size > 1) "Steerer" else null
                                 else -> null
                             }
+                            val itemModifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 12.dp)
+                                .then(
+                                    if (isSeatOrderLocked) {
+                                        Modifier
+                                    } else {
+                                        Modifier.detectReorderAfterLongPress(reorderableState)
+                                    }
+                                )
                             DeviceCard(
                                 device = device,
                                 onToggle = onToggleDevice,
                                 seatNumber = index + 1,
                                 seatRole = seatRole,
-                                isDragging = isDragging,
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(horizontal = 12.dp)
-                                    .detectReorderAfterLongPress(reorderableState)
+                                isDragging = if (isSeatOrderLocked) false else isDragging,
+                                onStartCalibration = onStartCalibration,
+                                onStopCalibration = onStopCalibration,
+                                modifier = itemModifier
                             )
                         }
                     }

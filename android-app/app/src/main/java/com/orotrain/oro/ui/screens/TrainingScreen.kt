@@ -23,6 +23,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.unit.dp
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import kotlinx.coroutines.delay
 import com.orotrain.oro.model.MAX_DEVICES
 import com.orotrain.oro.model.MAX_ZONES
 import com.orotrain.oro.model.OroUiState
@@ -43,22 +49,29 @@ fun TrainingScreen(
     onAddAfterZone: (String) -> Unit,
     onAdjustZone: (String, ZoneField, Int) -> Unit,
     onReorderZones: (Int, Int) -> Unit,
+    onStartTraining: () -> Unit = {},
+    onPauseTraining: () -> Unit = {},
+    onResumeTraining: () -> Unit = {},
+    onStopTraining: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val reorderState = rememberReorderableLazyGridState(onMove = { from, to ->
         onReorderZones(from.index, to.index)
     })
 
-    LazyVerticalGrid(
-        columns = GridCells.Adaptive(minSize = 260.dp),
-        state = reorderState.gridState,
-        modifier = modifier
-            .fillMaxSize()
-            .padding(horizontal = 16.dp, vertical = 24.dp)
-            .reorderable(reorderState),
-        horizontalArrangement = Arrangement.spacedBy(16.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp)
-    ) {
+    var isAnyDragging by remember { mutableStateOf(false) }
+
+    Box(modifier = modifier.fillMaxSize()) {
+        LazyVerticalGrid(
+            columns = GridCells.Adaptive(minSize = 240.dp),
+            state = reorderState.gridState,
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 16.dp, vertical = 24.dp)
+                .reorderable(reorderState),
+            horizontalArrangement = Arrangement.spacedBy(20.dp),
+            verticalArrangement = Arrangement.spacedBy(20.dp)
+        ) {
         item(span = { GridItemSpan(maxLineSpan) }) {
             Box(
                 modifier = Modifier.fillMaxWidth(),
@@ -91,6 +104,16 @@ fun TrainingScreen(
             }
         }
 
+        // Show pre-training checklist if zones exist but training not active
+        if (state.zones.isNotEmpty() && !state.trainingSession.isActive) {
+            item(span = { GridItemSpan(maxLineSpan) }) {
+                com.orotrain.oro.ui.components.PreTrainingChecklist(
+                    state = state,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+        }
+
         if (state.zones.isEmpty()) {
             item(span = { GridItemSpan(maxLineSpan) }) {
                 Box(
@@ -112,6 +135,17 @@ fun TrainingScreen(
                 key = { _, zone -> zone.id }
             ) { index, zone ->
                 ReorderableItem(reorderState, key = zone.id) { isDragging ->
+                    // Update global drag state when this item starts dragging
+                    LaunchedEffect(isDragging) {
+                        if (isDragging) {
+                            isAnyDragging = true
+                        } else {
+                            // Small delay to allow recomposition before resetting
+                            delay(100)
+                            isAnyDragging = false
+                        }
+                    }
+
                     ZoneCard(
                         zone = zone,
                         index = index,
@@ -120,12 +154,24 @@ fun TrainingScreen(
                         onRemove = { onRemoveZone(zone.id) },
                         onDuplicate = { onDuplicateZone(zone.id) },
                         onAddAfter = { onAddAfterZone(zone.id) },
+                        onStart = onStartTraining,
+                        canStartTraining = state.canStartTraining,
+                        isDragging = isDragging,
+                        isAnyDragging = isAnyDragging && !isDragging,
                         modifier = Modifier
                             .detectReorderAfterLongPress(reorderState)
-                            .alpha(if (isDragging) 0.85f else 1f)
                     )
                 }
             }
         }
+    }
+
+        // Active Training Overlay
+        com.orotrain.oro.ui.components.ActiveTrainingOverlay(
+            state = state,
+            onPause = onPauseTraining,
+            onResume = onResumeTraining,
+            onStop = onStopTraining
+        )
     }
 }

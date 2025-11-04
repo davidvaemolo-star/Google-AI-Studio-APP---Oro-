@@ -1,0 +1,83 @@
+# Required Arduino Libraries for Oro Haptic Firmware
+
+## Installation Instructions
+Install these libraries via Arduino IDE Library Manager:
+Tools → Manage Libraries... (or Ctrl+Shift+I)
+
+## IMPORTANT: Board Support Package MUST BE INSTALLED FIRST
+
+Seeed nRF52 Boards
+- Installation:
+  1. File → Preferences
+  2. Add to "Additional Board Manager URLs":
+     https://files.seeedstudio.com/arduino/package_seeeduino_boards_index.json
+  3. Tools → Board → Boards Manager
+  4. Search "Seeed nRF52"
+  5. Install "Seeed nRF52 Boards" package (v1.1.8 or newer)
+  6. Select: Tools → Board → Seeed nRF52 Boards → Seeed XIAO nRF52840 Sense
+
+## Required Libraries
+
+1. Adafruit Bluefruit nRF52 Libraries (INCLUDED with Seeed nRF52 Boards)
+   - Library: bluefruit.h
+   - NO SEPARATE INSTALLATION NEEDED
+   - Automatically included when Seeed nRF52 board package is installed
+   - Description: Native BLE library for nRF52840
+   - NOTE: DO NOT install ArduinoBLE - it is incompatible with nRF52 architecture
+
+2. Adafruit DRV2605 Library
+   - Author: Adafruit
+   - Version: 1.2.2 or newer
+   - Description: Driver for DRV2605L haptic motor controller
+   - Install: Search "Adafruit DRV2605" → Install
+   - Dependencies: Will auto-install Adafruit BusIO
+
+3. Wire (Built-in)
+   - No installation needed
+   - Built into Arduino core
+   - Used for I2C communication
+
+## Verification
+
+After installation, verify libraries are present:
+Sketch → Include Library → Should see:
+  - Adafruit Bluefruit nRF52 Libraries (or simply include <bluefruit.h>)
+  - Adafruit DRV2605 Library
+  - Wire (under built-in libraries)
+
+If sketch compiles without errors, all libraries are correctly installed.
+
+## Version Compatibility
+
+Tested with:
+- Arduino IDE: 2.3.2
+- Adafruit Bluefruit nRF52: Included with Seeed nRF52 Boards v1.1.8
+- Adafruit DRV2605: 1.2.2
+- Seeed nRF52 Boards: 1.1.8
+
+Newer versions should work, but if you encounter issues, use these exact versions.
+
+## Troubleshooting
+
+### "bluefruit.h: No such file or directory"
+- Seeed nRF52 board package not installed or wrong board selected
+- Solution: Install "Seeed nRF52 Boards" package and select XIAO nRF52840 Sense board
+
+### "ArduinoBLE library incompatible with nRF52 architecture"
+- ArduinoBLE library is installed (should NOT be used for nRF52)
+- Solution: Uninstall ArduinoBLE library, use bluefruit.h instead (included with board package)
+
+### "Adafruit_DRV2605.h: No such file or directory"
+- Library not installed
+- Solution: Install "Adafruit DRV2605 Library" via Library Manager
+
+### Compilation errors about BLE functions
+- Wrong board selected
+- Solution: Ensure "Seeed XIAO nRF52840 Sense" is selected in Tools → Board → Seeed nRF52 Boards
+
+### Upload fails "No DFU capable USB device available"
+- Board not in bootloader mode or wrong port
+- Solution:
+  1. Press RESET button twice quickly to enter bootloader
+  2. Select correct COM port in Tools → Port
+  3. Try upload again

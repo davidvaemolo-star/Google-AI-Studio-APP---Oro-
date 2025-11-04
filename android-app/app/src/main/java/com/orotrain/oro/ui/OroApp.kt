@@ -46,7 +46,12 @@ fun OroApp(
                     state = state,
                     onScan = viewModel::startScan,
                     onToggleDevice = viewModel::toggleDeviceConnection,
-                    onReorder = viewModel::reorderConnectedDevices
+                    onReorder = viewModel::reorderConnectedDevices,
+                    isSeatOrderLocked = state.isSeatOrderLocked,
+                    onToggleSeatLock = viewModel::toggleSeatOrderLock,
+                    onConnectAll = viewModel::connectAllDevices,
+                    onStartCalibration = viewModel::startCalibration,
+                    onStopCalibration = viewModel::stopCalibration
                 )
 
                 AppDestination.Training -> TrainingScreen(
@@ -57,7 +62,11 @@ fun OroApp(
                     onDuplicateZone = viewModel::duplicateZone,
                     onAddAfterZone = viewModel::addZoneAfter,
                     onAdjustZone = viewModel::adjustZone,
-                    onReorderZones = viewModel::reorderZones
+                    onReorderZones = viewModel::reorderZones,
+                    onStartTraining = viewModel::startTrainingSession,
+                    onPauseTraining = viewModel::pauseTrainingSession,
+                    onResumeTraining = viewModel::resumeTrainingSession,
+                    onStopTraining = viewModel::stopTrainingSession
                 )
             }
         }
