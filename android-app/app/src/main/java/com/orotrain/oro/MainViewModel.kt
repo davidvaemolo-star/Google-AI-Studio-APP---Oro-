@@ -1,5 +1,6 @@
 package com.orotrain.oro
 
+import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.orotrain.oro.ble.BleManager
@@ -26,6 +27,10 @@ class MainViewModel(
     private val bleManager: BleManager? = null,
     private val audioManager: com.orotrain.oro.audio.AudioManager? = null
 ) : ViewModel() {
+
+    companion object {
+        private const val TAG = "MainViewModel"
+    }
 
     private val _uiState = MutableStateFlow(OroUiState())
     val uiState: StateFlow<OroUiState> = _uiState.asStateFlow()
@@ -112,9 +117,18 @@ class MainViewModel(
         // Trigger follower haptics if pacer completed a stroke during active training
         val state = _uiState.value
         val pacer = state.devices.find { it.seat == 1 }
+
+        // Debug logging for stroke detection
+        val device = state.devices.find { it.id == event.deviceId }
+        Log.d(TAG, "Stroke event received - Device: ${device?.name ?: event.deviceId}, " +
+                "Seat: ${device?.seat}, Phase: ${event.phase}, " +
+                "IsPacer: ${event.deviceId == pacer?.id}, " +
+                "TrainingActive: ${state.trainingSession.status == com.orotrain.oro.model.TrainingStatus.Active}")
+
         if (state.trainingSession.status == com.orotrain.oro.model.TrainingStatus.Active &&
             event.deviceId == pacer?.id &&
             event.phase == BleManager.STROKE_PHASE_FINISH) {
+            Log.d(TAG, "Triggering haptics for all devices (including pacer)")
             triggerFollowerHaptics(state.currentZone)
         }
     }
@@ -133,6 +147,7 @@ class MainViewModel(
         // Audio: Halfway announcement
         if (newStroke == currentZone.strokes / 2) {
             audioManager?.announceHalfway(newStroke, currentZone.strokes)
+            broadcastAudioPrompt(BleManager.PATTERN_SOFT_CLICK, 80)
         }
 
         // Audio: Warning before zone transition (5 strokes remaining)
@@ -142,6 +157,7 @@ class MainViewModel(
             if (nextZoneIndex < state.zones.size) {
                 val nextZone = state.zones[nextZoneIndex]
                 audioManager?.announceZoneTransition(nextZone, nextZoneIndex + 1, state.zones.size, 5)
+                broadcastAudioPrompt(BleManager.PATTERN_TRANSITION, 90)
             }
         }
 
@@ -157,10 +173,12 @@ class MainViewModel(
                 // Audio: Set complete announcement
                 audioManager?.announceSetComplete(session.currentSet, currentZone.sets)
                 audioManager?.playSetCompleteSound()
+                broadcastAudioPrompt(BleManager.PATTERN_DOUBLE_CLICK, 100)
 
                 // Audio: Last set announcement
                 if (newSet == currentZone.sets) {
                     audioManager?.announceLastSet()
+                    broadcastAudioPrompt(BleManager.PATTERN_TRIPLE_CLICK, 100)
                 }
 
                 session.copy(
@@ -195,6 +213,7 @@ class MainViewModel(
             // Audio: Zone transition announcement
             audioManager?.playZoneTransitionSound()
             audioManager?.announceZoneTransition(nextZone, nextZoneIndex + 1, state.zones.size, 0)
+            broadcastAudioPrompt(BleManager.PATTERN_ALERT_750MS, 100)
 
             viewModelScope.launch {
                 configureCurrentZone()
@@ -213,6 +232,7 @@ class MainViewModel(
             val totalStrokes = state.zones.sumOf { it.strokes * it.sets }
             audioManager?.playSessionCompleteSound()
             audioManager?.announceSessionComplete(totalStrokes, spm)
+            broadcastAudioPrompt(BleManager.PATTERN_ALERT_750MS, 100)
 
             stopTrainingSession()
             session.copy(
@@ -237,20 +257,28 @@ class MainViewModel(
     }
 
     private fun triggerFollowerHaptics(currentZone: Zone?) {
-        val state = _uiState.value
-        val followers = state.devices.filter { it.status == DeviceStatus.Connected && it.seat != 1 }
-
-        // Determine haptic pattern based on zone level
         val pattern = when (currentZone?.level) {
-            com.orotrain.oro.model.ZoneLevel.Low -> com.orotrain.oro.ble.BleManager.PATTERN_SOFT_CLICK
-            com.orotrain.oro.model.ZoneLevel.Medium -> com.orotrain.oro.ble.BleManager.PATTERN_STRONG_CLICK
-            com.orotrain.oro.model.ZoneLevel.High -> com.orotrain.oro.ble.BleManager.PATTERN_DOUBLE_CLICK
-            null -> com.orotrain.oro.ble.BleManager.PATTERN_STRONG_CLICK
+            com.orotrain.oro.model.ZoneLevel.Low -> BleManager.PATTERN_SOFT_CLICK
+            com.orotrain.oro.model.ZoneLevel.Medium -> BleManager.PATTERN_STRONG_CLICK
+            com.orotrain.oro.model.ZoneLevel.High -> BleManager.PATTERN_DOUBLE_CLICK
+            null -> BleManager.PATTERN_STRONG_CLICK
         }
 
-        followers.forEach { device ->
-            bleManager?.testHapticPattern(device.id, pattern)
-        }
+        bleManager?.broadcastHaptic(
+            command = BleManager.CMD_SINGLE_PULSE,
+            pattern = pattern,
+            intensity = 100,
+            includePacer = true  // Include pacer so all devices pulse together
+        )
+    }
+
+    private fun broadcastAudioPrompt(pattern: Byte, intensity: Int = 90) {
+        bleManager?.broadcastHaptic(
+            command = BleManager.CMD_TEST_PATTERN,
+            pattern = pattern,
+            intensity = intensity,
+            includePacer = true
+        )
     }
 
     fun setDestination(destination: AppDestination) {
@@ -495,7 +523,7 @@ class MainViewModel(
             strokes = zone.strokes,
             sets = zone.sets,
             spm = zone.spm,
-            zoneColor = com.orotrain.oro.ble.BleManager.ZONE_ENDURANCE
+            zoneColor = BleManager.ZONE_ENDURANCE
         )
     }
 
@@ -515,7 +543,7 @@ class MainViewModel(
         bleManager?.stopTraining(deviceId)
     }
 
-    fun testHaptic(deviceId: String, pattern: Byte = com.orotrain.oro.ble.BleManager.PATTERN_STRONG_CLICK) {
+    fun testHaptic(deviceId: String, pattern: Byte = BleManager.PATTERN_STRONG_CLICK) {
         bleManager?.testHapticPattern(deviceId, pattern)
     }
 
@@ -635,7 +663,10 @@ class MainViewModel(
 
             // Enable stroke detection on pacer (Seat 1)
             val pacer = connectedDevices.find { it.seat == 1 }
-            pacer?.let { enableStrokeDetection(it.id) }
+            pacer?.let {
+                Log.d(TAG, "Enabling stroke detection on pacer: ${it.name} (Seat ${it.seat})")
+                enableStrokeDetection(it.id)
+            } ?: Log.w(TAG, "No pacer device found (Seat 1) - stroke detection not enabled!")
 
             // Set status to Active
             _uiState.update {
@@ -648,6 +679,7 @@ class MainViewModel(
 
             // Audio: Training start announcement
             audioManager?.announceTrainingStart(state.zones.size)
+            broadcastAudioPrompt(BleManager.PATTERN_TRIPLE_CLICK, 100)
         }
     }
 
@@ -689,6 +721,7 @@ class MainViewModel(
 
         // Audio: Pause announcement
         audioManager?.announceTrainingPaused()
+        broadcastAudioPrompt(BleManager.PATTERN_SOFT_CLICK, 70)
     }
 
     fun resumeTrainingSession() {
@@ -717,6 +750,7 @@ class MainViewModel(
 
         // Audio: Resume announcement
         audioManager?.announceTrainingResumed()
+        broadcastAudioPrompt(BleManager.PATTERN_DOUBLE_CLICK, 90)
     }
 
     fun stopTrainingSession() {

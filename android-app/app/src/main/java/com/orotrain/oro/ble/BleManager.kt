@@ -78,6 +78,8 @@ class BleManager(private val context: Context) {
         const val PATTERN_DOUBLE_CLICK: Byte = 12
         const val PATTERN_TRIPLE_CLICK: Byte = 13
         const val PATTERN_LONG_ALERT: Byte = 24
+        const val PATTERN_ALERT_750MS: Byte = PATTERN_LONG_ALERT
+        const val PATTERN_TRANSITION: Byte = 51
 
         // Device States
         const val STATE_IDLE: Byte = 0x00
@@ -130,6 +132,11 @@ class BleManager(private val context: Context) {
         val accelMagnitude: Float
     )
 
+    data class BroadcastResult(
+        val attempted: Int,
+        val succeeded: Int
+    )
+
     private val _strokeEvents = MutableStateFlow<StrokeEvent?>(null)
     val strokeEvents: StateFlow<StrokeEvent?> = _strokeEvents.asStateFlow()
 
@@ -141,6 +148,13 @@ class BleManager(private val context: Context) {
     private val deviceReadyMap = ConcurrentHashMap<String, Boolean>()
     private val commandLocks = ConcurrentHashMap<String, ReentrantLock>()
     private var pacerDeviceId: String? = null  // Track which device is Seat 1 (pacer)
+
+    private data class DeviceStatusFrame(
+        val state: Byte,
+        val strokeCount: Int,
+        val currentSet: Int,
+        val batteryLevel: Int
+    )
 
     fun isBluetoothEnabled(): Boolean = bluetoothAdapter?.isEnabled == true
 
@@ -333,6 +347,7 @@ class BleManager(private val context: Context) {
         manualDisconnects.add(deviceId)
         connectionTimeoutJobs.remove(deviceId)?.cancel()
         connectionRetryMap.remove(deviceId)
+        connectionRetryMap.remove("${deviceId}_service_discovery")  // Clean up service discovery retries
         deviceReadyMap.remove(deviceId)
         commandLocks.remove(deviceId)
 
@@ -428,24 +443,50 @@ class BleManager(private val context: Context) {
 
         @SuppressLint("MissingPermission")
         override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
+            val deviceId = gatt.device.address
+
             if (status == BluetoothGatt.GATT_SUCCESS) {
-                val deviceId = gatt.device.address
                 Log.d(TAG, "Services discovered for $deviceId")
 
                 if (!hasRequiredPermissions()) return
 
+                // Log all discovered services for debugging
+                val services = gatt.services
+                Log.d(TAG, "  Total services found: ${services.size}")
+                services.forEach { service ->
+                    Log.d(TAG, "    Service: ${service.uuid}")
+                }
+
                 val hapticService = gatt.getService(ORO_HAPTIC_SERVICE_UUID)
                 if (hapticService == null) {
-                    Log.w(TAG, "Oro Haptic service not found on $deviceId, retrying discovery")
+                    Log.w(TAG, "Oro Haptic service NOT FOUND on $deviceId")
                     deviceReadyMap[deviceId] = false
-                    try {
-                        gatt.discoverServices()
-                    } catch (e: Exception) {
-                        Log.w(TAG, "Unable to restart service discovery for $deviceId: ${e.message}")
+
+                    // Retry discovery with a delay (max 3 attempts)
+                    val retryCount = connectionRetryMap.getOrDefault("${deviceId}_service_discovery", 0)
+                    if (retryCount < 3) {
+                        connectionRetryMap["${deviceId}_service_discovery"] = retryCount + 1
+                        Log.d(TAG, "  Scheduling service rediscovery attempt ${retryCount + 1}/3 for $deviceId")
+                        scope.launch {
+                            delay(500L * (retryCount + 1))  // Increasing delay: 500ms, 1000ms, 1500ms
+                            if (deviceGattMap[deviceId] != null && hasRequiredPermissions()) {
+                                Log.d(TAG, "  Retrying service discovery for $deviceId (attempt ${retryCount + 1})")
+                                try {
+                                    gatt.discoverServices()
+                                } catch (e: Exception) {
+                                    Log.e(TAG, "  Service rediscovery failed for $deviceId: ${e.message}")
+                                }
+                            }
+                        }
+                    } else {
+                        Log.e(TAG, "  Max service discovery attempts reached for $deviceId - device may not be advertising service correctly")
                     }
                     return
                 } else {
+                    // Service found successfully
+                    connectionRetryMap.remove("${deviceId}_service_discovery")
                     deviceReadyMap[deviceId] = true
+                    Log.d(TAG, "  Oro Haptic service FOUND on $deviceId - device is ready")
                 }
 
                 // Enable notifications for Device Status
@@ -574,21 +615,23 @@ class BleManager(private val context: Context) {
 
                 Log.d(TAG, "Stroke event from ${gatt.device.address}: phase=$phase, accel=$accelMagnitude")
 
-                if (phase == STROKE_PHASE_FINISH && gatt.device.address == pacerDeviceId) {
-                    triggerFollowerHaptics()
-                }
             }
             DEVICE_STATUS_UUID -> {
-                // Parse Device Status notification
-                // Expected format: [battery_level, status_flags, ...]
-                if (value.isNotEmpty()) {
-                    val batteryLevel = value[0].toInt() and 0xFF
-                    Log.d(TAG, "Device status update for ${gatt.device.address}: battery=$batteryLevel%")
-                    updateDeviceStatus(
-                        gatt.device.address,
-                        DeviceStatus.Connected,
-                        batteryLevel
+                val frame = parseDeviceStatusFrame(value)
+                if (frame != null) {
+                    val deviceId = gatt.device.address
+                    Log.d(
+                        TAG,
+                        "Device status update for $deviceId: state=0x${String.format("%02X", frame.state)} " +
+                            "stroke=${frame.strokeCount} set=${frame.currentSet} battery=${frame.batteryLevel}%"
                     )
+                    updateDeviceStatus(
+                        deviceId,
+                        DeviceStatus.Connected,
+                        batteryLevel = frame.batteryLevel
+                    )
+                } else {
+                    Log.w(TAG, "Malformed device status payload from ${gatt.device.address}: ${value.size} bytes")
                 }
             }
             BATTERY_LEVEL_CHAR_UUID -> {
@@ -601,6 +644,15 @@ class BleManager(private val context: Context) {
                 )
             }
         }
+    }
+
+    private fun parseDeviceStatusFrame(value: ByteArray): DeviceStatusFrame? {
+        if (value.size < 5) return null
+        val state = value[0]
+        val strokeCount = (value[1].toInt() and 0xFF) or ((value[2].toInt() and 0xFF) shl 8)
+        val currentSet = value[3].toInt() and 0xFF
+        val batteryLevel = value[4].toInt() and 0xFF
+        return DeviceStatusFrame(state, strokeCount, currentSet, batteryLevel)
     }
 
     private fun writeDescriptorCompat(
@@ -651,6 +703,7 @@ class BleManager(private val context: Context) {
                 Log.w(TAG, "Error cleaning up GATT for $deviceId: ${e.message}")
             }
         }
+        connectionRetryMap.remove("${deviceId}_service_discovery")  // Clean up service discovery retries
         deviceReadyMap.remove(deviceId)
         commandLocks.remove(deviceId)
 
@@ -681,6 +734,7 @@ class BleManager(private val context: Context) {
         status: DeviceStatus,
         batteryLevel: Int? = null
     ) {
+        deviceStatusMap[deviceId] = status
         _discoveredDevices.value = _discoveredDevices.value.map { device ->
             if (device.id == deviceId) {
                 device.copy(
@@ -781,15 +835,21 @@ class BleManager(private val context: Context) {
             return false
         }
 
+        // Check if device is ready - if not, trigger service rediscovery but still attempt to send
         if (deviceReadyMap[deviceId] != true) {
-            Log.w(TAG, "Device $deviceId not ready for haptic command, re-discovering services")
-            deviceReadyMap[deviceId] = false
+            Log.w(TAG, "Device $deviceId not ready for haptic command, triggering service rediscovery")
             try {
-                gatt.discoverServices()
+                scope.launch {
+                    delay(100)  // Small delay before triggering rediscovery
+                    if (hasRequiredPermissions() && deviceGattMap[deviceId] != null) {
+                        gatt.discoverServices()
+                        Log.d(TAG, "Triggered service rediscovery for $deviceId")
+                    }
+                }
             } catch (e: Exception) {
                 Log.w(TAG, "Unable to trigger service discovery on $deviceId: ${e.message}")
             }
-            return false
+            // Don't return false immediately - try to send anyway in case service is available
         }
 
         val lock = commandLocks.computeIfAbsent(deviceId) { ReentrantLock() }
@@ -890,29 +950,55 @@ class BleManager(private val context: Context) {
         return stopTraining(deviceId)
     }
 
-    private fun triggerFollowerHaptics() {
-        // Send haptic pulse to all connected devices except the pacer
+    fun broadcastHaptic(
+        command: Byte = CMD_SINGLE_PULSE,
+        pattern: Byte = PATTERN_STRONG_CLICK,
+        intensity: Int = 100,
+        includePacer: Boolean = false
+    ): BroadcastResult {
         var attempted = 0
         var succeeded = 0
+
+        Log.d(TAG, "=== broadcastHaptic START ===")
+        Log.d(TAG, "  Command: 0x${String.format("%02X", command)}, Pattern: $pattern, Intensity: $intensity, includePacer: $includePacer")
+        Log.d(TAG, "  Total devices in deviceGattMap: ${deviceGattMap.size}")
+        Log.d(TAG, "  Pacer device ID: $pacerDeviceId")
+
         deviceGattMap.keys.forEach { deviceId ->
-            if (deviceId != pacerDeviceId && deviceStatusMap[deviceId] == DeviceStatus.Connected) {
+            val isPacer = deviceId == pacerDeviceId
+            val isConnected = deviceStatusMap[deviceId] == DeviceStatus.Connected
+            val isReady = deviceReadyMap[deviceId] == true
+            val shouldSend = isConnected && isReady && (includePacer || !isPacer)
+
+            Log.d(TAG, "  Device $deviceId: isPacer=$isPacer, connected=$isConnected, ready=$isReady, shouldSend=$shouldSend")
+
+            if (shouldSend) {
                 attempted++
                 val result = sendHapticCommand(
                     deviceId,
-                    CMD_SINGLE_PULSE,
-                    intensity = 100,
-                    pattern = PATTERN_STRONG_CLICK
+                    command,
+                    intensity = intensity,
+                    pattern = pattern
                 )
                 if (result) {
                     succeeded++
+                    Log.d(TAG, "    ✓ SUCCESS sending to $deviceId")
+                } else {
+                    Log.w(TAG, "    ✗ FAILED sending to $deviceId")
                 }
             }
         }
+
         if (attempted == 0) {
-            Log.d(TAG, "No follower devices available for haptic relay")
+            Log.w(TAG, "broadcastHaptic: NO ELIGIBLE DEVICES (includePacer=$includePacer, totalDevices=${deviceGattMap.size})")
         } else if (succeeded != attempted) {
-            Log.w(TAG, "Haptic relay partial success: $succeeded / $attempted followers pulsed")
+            Log.w(TAG, "broadcastHaptic PARTIAL SUCCESS: $succeeded / $attempted succeeded")
+        } else {
+            Log.d(TAG, "broadcastHaptic COMPLETE SUCCESS: $succeeded / $attempted devices")
         }
+        Log.d(TAG, "=== broadcastHaptic END ===")
+
+        return BroadcastResult(attempted, succeeded)
     }
 
     // Calibration functions

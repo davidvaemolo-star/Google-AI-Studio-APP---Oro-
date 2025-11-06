@@ -19,6 +19,7 @@
 #include <bluefruit.h>
 #include <Wire.h>
 #include <Adafruit_DRV2605.h>
+#include <math.h>
 #include "LSM6DS3.h"  // Use Seeed_Arduino_LSM6DS3 library
 
 // ============================================================================
@@ -206,6 +207,12 @@ struct CalibrationState {
 CalibrationState calibrationState = {false, 0, 0.0, 0.0};
 
 // Battery monitoring
+const float BATTERY_DIVIDER_RATIO = (1000000.0f + 510000.0f) / 510000.0f;  // 2.960784
+const float BATTERY_FULL_VOLTAGE = 4.2f;
+const float BATTERY_EMPTY_VOLTAGE = 3.0f;
+const float ADC_REFERENCE_VOLTAGE = 3.6f;  // 0.6V reference with 1/6 gain
+const float ADC_MAX_READING = 4095.0f;      // 12-bit resolution
+const uint8_t BATTERY_SAMPLE_COUNT = 8;
 unsigned long lastBatteryRead = 0;
 uint8_t lastBatteryLevel = 100;
 
@@ -251,6 +258,10 @@ void setup() {
 
   // Initialize battery monitoring
   pinMode(BATTERY_PIN, INPUT);
+#if defined(AR_INTERNAL_0_6)
+  analogReference(AR_INTERNAL_0_6);
+#endif
+  analogReadResolution(12);
   updateBatteryLevel();
 
   // System ready
@@ -822,6 +833,11 @@ void handleStrokeDetection() {
 
   switch (strokeDetection.currentPhase) {
     case STROKE_PHASE_RECOVERY:
+      if (!strokeDetection.inStroke &&
+          strokeDetection.lastStrokeTime != 0 &&
+          (currentTime - strokeDetection.lastStrokeTime) < STROKE_MIN_INTERVAL_MS) {
+        break;
+      }
       // Waiting for catch - detect forward acceleration threshold
       if (strokeAccel > strokeDetection.threshold) {
         // Stroke catch detected!
@@ -860,6 +876,30 @@ void handleStrokeDetection() {
         trainingState.currentStroke++;
         updateDeviceStatus();
 
+        // Play zone-patterned haptic for the pacer device
+        uint8_t pattern = PATTERN_STRONG_CLICK;
+        switch (trainingConfig.zoneColor) {
+          case 0x01:
+            pattern = PATTERN_SOFT_CLICK;
+            break;
+          case 0x02:
+            pattern = PATTERN_STRONG_CLICK;
+            break;
+          case 0x03:
+            pattern = PATTERN_DOUBLE_CLICK;
+            break;
+          case 0x04:
+            pattern = PATTERN_TRIPLE_CLICK;
+            break;
+          case 0x05:
+            pattern = PATTERN_ALERT_750MS;
+            break;
+          case 0x06:
+            pattern = PATTERN_TRANSITION;
+            break;
+        }
+        playHapticEffect(pattern, 100);
+
         // Send stroke event
         sendStrokeEvent(STROKE_PHASE_FINISH, currentTime, strokeAccel);
 
@@ -881,6 +921,8 @@ void handleStrokeDetection() {
       if (strokeAccel > -0.5) {
         strokeDetection.currentPhase = STROKE_PHASE_RECOVERY;
         strokeDetection.inStroke = false;
+        strokeDetection.maxAccel = 0.0;
+        strokeDetection.minAccel = 0.0;
         sendStrokeEvent(STROKE_PHASE_RECOVERY, currentTime, strokeAccel);
         Serial.println("RECOVERY phase");
       }
@@ -1019,30 +1061,35 @@ void sendCalibrationStatus() {
 // ============================================================================
 
 void updateBatteryLevel() {
-  // Read battery voltage via ADC
-  // XIAO nRF52840 battery voltage divider: VBAT -> 1M -> ADC -> 510K -> GND
-  // ADC reference: 3.6V (nRF52840 internal reference with gain 1/6)
-  // Full scale ADC (1023) = 3.6V * 6 = 21.6V (theoretical max)
-  // LiPo range: 4.2V (100%) to 3.0V (0%)
+  // Average several samples to reduce noise
+  uint32_t total = 0;
+  for (uint8_t i = 0; i < BATTERY_SAMPLE_COUNT; i++) {
+    total += analogRead(BATTERY_PIN);
+  }
+  float rawAverage = total / (float)BATTERY_SAMPLE_COUNT;
 
-  int rawADC = analogRead(BATTERY_PIN);
+  // Convert ADC reading to battery voltage
+  float voltage = (rawAverage / ADC_MAX_READING) * ADC_REFERENCE_VOLTAGE * BATTERY_DIVIDER_RATIO;
 
-  // Convert ADC to voltage
-  // With internal 0.6V reference and 1/6 gain: Vmax = 3.6V
-  // Battery divider: (1M + 510K) / 510K = 2.96:1
-  float voltage = (rawADC / 1023.0) * 3.6 * 2.96;
+  // Convert voltage to percentage (linear approximation between empty/full thresholds)
+  float percentage = ((voltage - BATTERY_EMPTY_VOLTAGE) / (BATTERY_FULL_VOLTAGE - BATTERY_EMPTY_VOLTAGE)) * 100.0f;
+  if (percentage < 0.0f) percentage = 0.0f;
+  if (percentage > 100.0f) percentage = 100.0f;
 
-  // Convert voltage to percentage (4.2V = 100%, 3.0V = 0%)
-  float percentage = ((voltage - 3.0) / (4.2 - 3.0)) * 100.0;
+  // Simple low-pass filter to avoid jumping between updates
+  static float filteredPercentage = 100.0f;
+  static bool filterInitialized = false;
+  if (!filterInitialized) {
+    filteredPercentage = percentage;
+    filterInitialized = true;
+  } else {
+    filteredPercentage = (filteredPercentage * 0.7f) + (percentage * 0.3f);
+  }
 
-  // Clamp to 0-100%
-  if (percentage < 0) percentage = 0;
-  if (percentage > 100) percentage = 100;
-
-  uint8_t batteryLevel = (uint8_t)percentage;
+  uint8_t batteryLevel = (uint8_t)roundf(filteredPercentage);
 
   // Update only if changed by more than 1%
-  if (abs(batteryLevel - lastBatteryLevel) > 1) {
+  if (abs((int)batteryLevel - (int)lastBatteryLevel) > 1) {
     trainingState.batteryLevel = batteryLevel;
     lastBatteryLevel = batteryLevel;
 
