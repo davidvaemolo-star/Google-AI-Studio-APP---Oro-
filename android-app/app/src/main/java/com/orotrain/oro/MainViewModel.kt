@@ -147,7 +147,7 @@ class MainViewModel(
         // Audio: Halfway announcement
         if (newStroke == currentZone.strokes / 2) {
             audioManager?.announceHalfway(newStroke, currentZone.strokes)
-            broadcastAudioPrompt(BleManager.PATTERN_SOFT_CLICK, 80)
+            broadcastAudioPrompt(BleManager.AUDIO_HALFWAY, 80)
         }
 
         // Audio: Warning before zone transition (5 strokes remaining)
@@ -157,7 +157,7 @@ class MainViewModel(
             if (nextZoneIndex < state.zones.size) {
                 val nextZone = state.zones[nextZoneIndex]
                 audioManager?.announceZoneTransition(nextZone, nextZoneIndex + 1, state.zones.size, 5)
-                broadcastAudioPrompt(BleManager.PATTERN_TRANSITION, 90)
+                broadcastAudioPrompt(BleManager.AUDIO_ZONE_TRANSITION, 90)
             }
         }
 
@@ -173,12 +173,12 @@ class MainViewModel(
                 // Audio: Set complete announcement
                 audioManager?.announceSetComplete(session.currentSet, currentZone.sets)
                 audioManager?.playSetCompleteSound()
-                broadcastAudioPrompt(BleManager.PATTERN_DOUBLE_CLICK, 100)
+                broadcastAudioPrompt(BleManager.AUDIO_SET_COMPLETE, 100)
 
                 // Audio: Last set announcement
                 if (newSet == currentZone.sets) {
                     audioManager?.announceLastSet()
-                    broadcastAudioPrompt(BleManager.PATTERN_TRIPLE_CLICK, 100)
+                    broadcastAudioPrompt(BleManager.AUDIO_LAST_SET, 100)
                 }
 
                 session.copy(
@@ -213,7 +213,7 @@ class MainViewModel(
             // Audio: Zone transition announcement
             audioManager?.playZoneTransitionSound()
             audioManager?.announceZoneTransition(nextZone, nextZoneIndex + 1, state.zones.size, 0)
-            broadcastAudioPrompt(BleManager.PATTERN_ALERT_750MS, 100)
+            broadcastAudioPrompt(BleManager.AUDIO_ZONE_TRANSITION, 100)
 
             viewModelScope.launch {
                 configureCurrentZone()
@@ -232,7 +232,7 @@ class MainViewModel(
             val totalStrokes = state.zones.sumOf { it.strokes * it.sets }
             audioManager?.playSessionCompleteSound()
             audioManager?.announceSessionComplete(totalStrokes, spm)
-            broadcastAudioPrompt(BleManager.PATTERN_ALERT_750MS, 100)
+            broadcastAudioPrompt(BleManager.AUDIO_SESSION_COMPLETE, 100)
 
             stopTrainingSession()
             session.copy(
@@ -257,26 +257,26 @@ class MainViewModel(
     }
 
     private fun triggerFollowerHaptics(currentZone: Zone?) {
-        val pattern = when (currentZone?.level) {
-            com.orotrain.oro.model.ZoneLevel.Low -> BleManager.PATTERN_SOFT_CLICK
-            com.orotrain.oro.model.ZoneLevel.Medium -> BleManager.PATTERN_STRONG_CLICK
-            com.orotrain.oro.model.ZoneLevel.High -> BleManager.PATTERN_DOUBLE_CLICK
-            null -> BleManager.PATTERN_STRONG_CLICK
+        val (pattern, intensity) = when (currentZone?.level) {
+            com.orotrain.oro.model.ZoneLevel.Low -> Pair(BleManager.PATTERN_SOFT_CLICK, 60)
+            com.orotrain.oro.model.ZoneLevel.Medium -> Pair(BleManager.PATTERN_STRONG_CLICK, 80)
+            com.orotrain.oro.model.ZoneLevel.High -> Pair(BleManager.PATTERN_DOUBLE_CLICK, 100)
+            null -> Pair(BleManager.PATTERN_STRONG_CLICK, 80)
         }
 
         bleManager?.broadcastHaptic(
             command = BleManager.CMD_SINGLE_PULSE,
             pattern = pattern,
-            intensity = 100,
+            intensity = intensity,
             includePacer = true  // Include pacer so all devices pulse together
         )
     }
 
-    private fun broadcastAudioPrompt(pattern: Byte, intensity: Int = 90) {
-        bleManager?.broadcastHaptic(
-            command = BleManager.CMD_TEST_PATTERN,
-            pattern = pattern,
-            intensity = intensity,
+    private fun broadcastAudioPrompt(audioEvent: Byte, volume: Int = 90) {
+        // Send audio command to all devices (including pacer)
+        bleManager?.broadcastAudio(
+            audioEvent = audioEvent,
+            volume = volume,
             includePacer = true
         )
     }
@@ -372,13 +372,22 @@ class MainViewModel(
     }
 
     fun startScan() {
-        if (_uiState.value.isScanning) return
+        Log.d(TAG, "=== startScan() CALLED ===")
+        Log.d(TAG, "  Currently scanning: ${_uiState.value.isScanning}")
+        Log.d(TAG, "  bleManager is null: ${bleManager == null}")
+
+        if (_uiState.value.isScanning) {
+            Log.d(TAG, "  Scan already in progress, ignoring")
+            return
+        }
 
         if (bleManager != null) {
             // Use real BLE scanning
+            Log.d(TAG, "  Starting real BLE scan via bleManager")
             bleManager.startScan()
         } else {
             // Fallback to simulated scan for preview/testing
+            Log.w(TAG, "  BleManager is NULL - using simulated scan (THIS SHOULD NOT HAPPEN IN PRODUCTION!)")
             viewModelScope.launch {
                 _uiState.update { it.copy(isScanning = true, devices = emptyList()) }
                 kotlinx.coroutines.delay(2000)
@@ -392,11 +401,28 @@ class MainViewModel(
     }
 
     fun toggleDeviceConnection(deviceId: String) {
-        val device = _uiState.value.devices.find { it.id == deviceId } ?: return
+        Log.d(TAG, "=== toggleDeviceConnection CALLED ===")
+        Log.d(TAG, "  Device ID: $deviceId")
+
+        val device = _uiState.value.devices.find { it.id == deviceId }
+        if (device == null) {
+            Log.e(TAG, "  Device NOT FOUND in state!")
+            return
+        }
+
+        Log.d(TAG, "  Device: ${device.name}, Status: ${device.status}")
+
         when (device.status) {
-            DeviceStatus.Connected -> disconnect(deviceId)
-            DeviceStatus.Disconnected -> connect(deviceId)
+            DeviceStatus.Connected -> {
+                Log.d(TAG, "  Action: Disconnecting")
+                disconnect(deviceId)
+            }
+            DeviceStatus.Disconnected -> {
+                Log.d(TAG, "  Action: Connecting")
+                connect(deviceId)
+            }
             DeviceStatus.Connecting -> {
+                Log.d(TAG, "  Action: Ignored (already connecting)")
                 // Ignore taps while connecting
             }
         }
@@ -410,11 +436,17 @@ class MainViewModel(
     }
 
     private fun connect(deviceId: String) {
+        Log.d(TAG, "=== connect() CALLED ===")
+        Log.d(TAG, "  Device ID: $deviceId")
+        Log.d(TAG, "  bleManager is null: ${bleManager == null}")
+
         if (bleManager != null) {
             // Use real BLE connection
+            Log.d(TAG, "  Calling bleManager.connectDevice($deviceId)")
             bleManager.connectDevice(deviceId)
         } else {
             // Fallback to simulated connection for preview/testing
+            Log.w(TAG, "  BleManager is NULL - using simulated connection (THIS SHOULD NOT HAPPEN IN PRODUCTION!)")
             _uiState.update { state ->
                 val updated = state.devices.map { device ->
                     if (device.id == deviceId) device.copy(status = DeviceStatus.Connecting)
@@ -497,15 +529,28 @@ class MainViewModel(
     private fun renumberSeats(devices: List<HapticDevice>): List<HapticDevice> {
         val connected = devices
             .filter { it.status == DeviceStatus.Connected }
-            .sortedBy { it.seat ?: Int.MAX_VALUE }
+            .sortedBy { device ->
+                // Extract numeric suffix from device name (e.g., "Oro-01" -> 1, "Oro-02" -> 2)
+                // This ensures consistent seat assignment based on device name, not connection order
+                val namePattern = """Oro-(\d+)""".toRegex()
+                val match = namePattern.find(device.name)
+                if (match != null) {
+                    match.groupValues[1].toIntOrNull() ?: Int.MAX_VALUE
+                } else {
+                    // If no number found, sort by name alphabetically
+                    device.name.hashCode()
+                }
+            }
 
         val reassigned = connected.mapIndexed { index, device ->
             device.copy(seat = index + 1)
         }
 
-        // Set first connected device (Seat 1) as pacer
+        // Set first device (Seat 1) as pacer - now based on device name, not connection order
         if (reassigned.isNotEmpty()) {
-            setPacerDevice(reassigned[0].id)
+            val pacerDevice = reassigned[0]
+            Log.d(TAG, "Setting pacer device: ${pacerDevice.name} (${pacerDevice.id}) as Seat 1")
+            setPacerDevice(pacerDevice.id)
         }
 
         val connectedIds = reassigned.map { it.id }.toSet()
@@ -545,6 +590,24 @@ class MainViewModel(
 
     fun testHaptic(deviceId: String, pattern: Byte = BleManager.PATTERN_STRONG_CLICK) {
         bleManager?.testHapticPattern(deviceId, pattern)
+    }
+
+    fun testAudioBroadcast(audioEvent: Byte = BleManager.AUDIO_TRAINING_START, volume: Int = 90) {
+        Log.d(TAG, "=== TEST AUDIO BROADCAST ===")
+        Log.d(TAG, "Audio Event: 0x${String.format("%02X", audioEvent)}, Volume: $volume")
+        Log.d(TAG, "Connected devices: ${_uiState.value.devices.filter { it.status == DeviceStatus.Connected }.size}")
+
+        val result = bleManager?.broadcastAudio(
+            audioEvent = audioEvent,
+            volume = volume,
+            includePacer = true
+        )
+
+        if (result != null) {
+            Log.d(TAG, "Broadcast result: ${result.succeeded}/${result.attempted} devices")
+        } else {
+            Log.w(TAG, "BleManager is null - cannot test audio")
+        }
     }
 
     // Calibration and stroke detection functions
@@ -679,7 +742,7 @@ class MainViewModel(
 
             // Audio: Training start announcement
             audioManager?.announceTrainingStart(state.zones.size)
-            broadcastAudioPrompt(BleManager.PATTERN_TRIPLE_CLICK, 100)
+            broadcastAudioPrompt(BleManager.AUDIO_TRAINING_START, 100)
         }
     }
 
@@ -721,7 +784,7 @@ class MainViewModel(
 
         // Audio: Pause announcement
         audioManager?.announceTrainingPaused()
-        broadcastAudioPrompt(BleManager.PATTERN_SOFT_CLICK, 70)
+        broadcastAudioPrompt(BleManager.AUDIO_PAUSE, 70)
     }
 
     fun resumeTrainingSession() {
@@ -750,7 +813,7 @@ class MainViewModel(
 
         // Audio: Resume announcement
         audioManager?.announceTrainingResumed()
-        broadcastAudioPrompt(BleManager.PATTERN_DOUBLE_CLICK, 90)
+        broadcastAudioPrompt(BleManager.AUDIO_RESUME, 90)
     }
 
     fun stopTrainingSession() {

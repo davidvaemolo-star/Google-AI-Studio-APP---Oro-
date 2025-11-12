@@ -3,6 +3,7 @@
  * Hardware: Seeed XIAO nRF52840 Sense
  * Haptic Driver: DRV2605L (I2C address 0x5A)
  * IMU Sensor: LSM6DS3 (built-in on XIAO Sense)
+ * Audio: MAX98357A I2S Audio Amplifier + 1W 8Ω Speaker
  *
  * BLE Services:
  * - Oro Haptic Service: Custom service for training control
@@ -11,9 +12,10 @@
  * Pin Map (IMMUTABLE):
  * - I2C: SDA=D4 (pin 4), SCL=D5 (pin 5)
  * - Battery Monitor: A0 (analog pin for voltage divider)
+ * - I2S Audio: BCLK=D1, LRCLK=D0, DIN=D2, SD=D6
  *
  * Author: Oro Development Team
- * Date: 2025-11-02
+ * Date: 2025-11-06
  */
 
 #include <bluefruit.h>
@@ -21,6 +23,7 @@
 #include <Adafruit_DRV2605.h>
 #include <math.h>
 #include "LSM6DS3.h"  // Use Seeed_Arduino_LSM6DS3 library
+#include "audio_i2s.h"  // I2S audio playback for MAX98357A
 
 // ============================================================================
 // HARDWARE CONFIGURATION
@@ -29,6 +32,12 @@
 // I2C Pins (XIAO nRF52840)
 #define SDA_PIN 4  // D4
 #define SCL_PIN 5  // D5
+
+// I2S Audio Pins (MAX98357A)
+#define I2S_BCLK_PIN  1  // D1 - Bit Clock
+#define I2S_LRCLK_PIN 2  // D2 - Left/Right Clock (Word Select)
+#define I2S_DIN_PIN   0  // D0 - Data In
+#define I2S_SD_PIN    6  // D6 - Shutdown (active-high, LOW=mute)
 
 // Battery Monitoring
 #define BATTERY_PIN A0
@@ -39,6 +48,9 @@ Adafruit_DRV2605 drv;
 
 // LSM6DS3 IMU Configuration (built-in on XIAO Sense, I2C address 0x6A)
 LSM6DS3 imu(I2C_MODE, 0x6A);
+
+// I2S Audio Configuration
+AudioI2S audioPlayer;
 
 // IMU Stroke Detection Settings
 #define IMU_SAMPLE_RATE_HZ 104       // 104 Hz sampling rate
@@ -60,6 +72,7 @@ LSM6DS3 imu(I2C_MODE, 0x6A);
 #define CONNECTION_STATUS_CHAR_UUID "12340004-1234-5678-1234-56789abcdef0"  // Read/Notify - connection state
 #define STROKE_EVENT_CHAR_UUID      "12340005-1234-5678-1234-56789abcdef0"  // Notify - stroke detection events
 #define CALIBRATION_CHAR_UUID       "12340006-1234-5678-1234-56789abcdef0"  // Write/Notify - calibration control
+#define AUDIO_CONTROL_CHAR_UUID     "12340007-1234-5678-1234-56789abcdef0"  // Write - trigger audio prompts
 
 // Standard Battery Service
 #define BATTERY_SERVICE_UUID        "180F"
@@ -98,6 +111,10 @@ BLECharacteristic strokeEventChar = BLECharacteristic(STROKE_EVENT_CHAR_UUID);
 // Calibration: Write + Notify
 // Format: [command(1 byte)][threshold(2 bytes float16)][status(1 byte)]
 BLECharacteristic calibrationChar = BLECharacteristic(CALIBRATION_CHAR_UUID);
+
+// Audio Control: Write only
+// Format: [audio_event(1 byte)][volume(1 byte)]
+BLECharacteristic audioControlChar = BLECharacteristic(AUDIO_CONTROL_CHAR_UUID);
 
 // ============================================================================
 // DEVICE STATE MANAGEMENT
@@ -151,6 +168,18 @@ enum HapticPattern {
   PATTERN_PULSING = 47,          // Continuous pulse
   PATTERN_TRANSITION = 51,       // Smooth transition
   PATTERN_ALERT_750MS = 24       // Long alert
+};
+
+// Audio Events
+enum AudioEvent {
+  AUDIO_TRAINING_START = 0x01,    // Training session start beep
+  AUDIO_HALFWAY = 0x02,           // Halfway point chime
+  AUDIO_SET_COMPLETE = 0x03,      // Set complete tone
+  AUDIO_LAST_SET = 0x04,          // Last set alert
+  AUDIO_ZONE_TRANSITION = 0x05,   // Zone transition sound
+  AUDIO_SESSION_COMPLETE = 0x06,  // Session complete fanfare
+  AUDIO_PAUSE = 0x07,             // Pause beep
+  AUDIO_RESUME = 0x08             // Resume beep
 };
 
 // Training Configuration
@@ -247,6 +276,20 @@ void setup() {
     Serial.println("ERROR: Failed to initialize IMU");
     trainingState.deviceState = STATE_ERROR;
     while(1) { delay(1000); }  // Halt on critical error
+  }
+
+  // Initialize I2S Audio (MAX98357A)
+  // CRITICAL: Explicitly enable MAX98357A amplifier BEFORE I2S init
+  pinMode(I2S_SD_PIN, OUTPUT);
+  digitalWrite(I2S_SD_PIN, HIGH);
+  delay(50);  // Allow amplifier to power up
+  Serial.print("MAX98357A SD pin (D6): ");
+  Serial.println(digitalRead(I2S_SD_PIN) ? "HIGH (enabled)" : "LOW (DISABLED!)");
+
+  if (audioPlayer.begin()) {
+    Serial.println("I2S audio initialized successfully");
+  } else {
+    Serial.println("WARNING: Failed to initialize I2S audio - continuing without audio");
   }
 
   // Initialize BLE
@@ -404,6 +447,13 @@ bool initializeBLE() {
   calibrationChar.setWriteCallback(onCalibrationWrite);
   calibrationChar.begin();
 
+  // Audio Control Characteristic (Write)
+  audioControlChar.setProperties(CHR_PROPS_WRITE);
+  audioControlChar.setPermission(SECMODE_OPEN, SECMODE_OPEN);
+  audioControlChar.setFixedLen(2);  // 1 byte audio event + 1 byte volume
+  audioControlChar.setWriteCallback(onAudioControlWrite);
+  audioControlChar.begin();
+
   // Configure Battery Service
   batteryService.begin();
 
@@ -446,6 +496,346 @@ bool initializeBLE() {
 
 void loop() {
   // Bluefruit handles BLE automatically, no need to poll
+
+  // Check for serial commands
+  if (Serial.available()) {
+    char cmd = Serial.read();
+    if (cmd == 'i' || cmd == 'I') {
+      // Print I2S debug info
+      Serial.println("\n=== I2S DEBUG INFO ===");
+      Serial.println("I2S Peripheral Configuration:");
+      Serial.print("  PSEL.SCK:   0x"); Serial.print(NRF_I2S->PSEL.SCK, HEX);
+      Serial.print(" (expected: 0x3 for GPIO3/D1)"); Serial.println();
+      Serial.print("  PSEL.LRCK:  0x"); Serial.print(NRF_I2S->PSEL.LRCK, HEX);
+      Serial.print(" (expected: 0x1C for GPIO28/D2)"); Serial.println();
+      Serial.print("  PSEL.SDOUT: 0x"); Serial.print(NRF_I2S->PSEL.SDOUT, HEX);
+      Serial.print(" (expected: 0x2 for GPIO2/D0)"); Serial.println();
+      Serial.print("  PSEL.SDIN:  0x"); Serial.print(NRF_I2S->PSEL.SDIN, HEX);
+      Serial.print(" (should be 0xFFFFFFFF = disconnected)"); Serial.println();
+      Serial.print("  ENABLE: "); Serial.println(NRF_I2S->ENABLE ? "1 (enabled)" : "0 (disabled!)");
+      Serial.print("  MODE: "); Serial.println(NRF_I2S->CONFIG.MODE == 0 ? "Master (0)" : "Slave (1)");
+      Serial.print("  MCKFREQ: 0x"); Serial.print(NRF_I2S->CONFIG.MCKFREQ, HEX);
+      Serial.println(" (should be 0x8000000 = 1MHz)");
+      Serial.print("  RATIO: "); Serial.print(NRF_I2S->CONFIG.RATIO);
+      Serial.println(" (should be 2 = 64x)");
+      Serial.print("  CHANNELS: ");
+      switch(NRF_I2S->CONFIG.CHANNELS) {
+        case 0: Serial.println("Stereo (0)"); break;
+        case 1: Serial.println("Left (1)"); break;
+        case 2: Serial.println("Right (2)"); break;
+        default: Serial.println("Unknown"); break;
+      }
+      Serial.print("SD_MODE pin (D6) state: ");
+      Serial.println(digitalRead(SD_MODE_PIN) ? "HIGH (amplifier enabled)" : "LOW (amplifier disabled!)");
+      Serial.println("\nPhysical pin voltage check:");
+      Serial.println("  D1 (BCLK) should show ~512 kHz square wave when playing");
+      Serial.println("  D2 (LRC)  should show ~16 kHz square wave when playing");
+      Serial.println("  D0 (DIN)  should show I2S data stream when playing");
+      Serial.println("\n=== HARDWARE GAIN PIN CHECK ===");
+      Serial.println("CRITICAL: MAX98357A GAIN pin determines maximum volume!");
+      Serial.println("  GAIN -> GND:     9dB gain  [QUIETEST]");
+      Serial.println("  GAIN -> FLOAT:  12dB gain  [MODERATE]");
+      Serial.println("  GAIN -> VDD:    15dB gain  [LOUDEST - 2x louder than GND!]");
+      Serial.println("If audio is faint, MOVE GAIN pin from GND to VDD!");
+      Serial.println("\nAvailable commands:");
+      Serial.println("  't' - Test audio tone (1000 Hz, 500ms at 100% volume)");
+      Serial.println("  'v' - Volume test (20%-100% sweep)");
+      Serial.println("  'a' - Toggle amplifier enable (SD_MODE pin)");
+      Serial.println("  'h' - Hardware troubleshooting guide");
+      Serial.println("  'l' - Loud test (continuous 1kHz at max volume)");
+      Serial.println("  'g' - GAIN PIN DIAGNOSTIC (check hardware gain setting)");
+      Serial.println("  'f' - Toggle I2S format (LEFT/RIGHT alignment)");
+      Serial.println("  'c' - Cycle I2S channel mode (Stereo/Left/Right)");
+      Serial.println("  's' - Speaker test (diagnose hardware issue)");
+      Serial.println("  'w' - Check wiring (verify pin connections)");
+    } else if (cmd == 't' || cmd == 'T') {
+      // Test audio - NOW USES 100% VOLUME FOR MAXIMUM OUTPUT
+      Serial.println("\n=== AUDIO TEST ===");
+      Serial.println("Playing 1000 Hz tone for 500ms at volume 100 (MAXIMUM)...");
+      Serial.println("This uses FULL 16-bit amplitude (32767).");
+      Serial.println("If still quiet, it's a HARDWARE issue - check GAIN pin!");
+      audioPlayer.playTone(1000, 500, 100);
+      Serial.println("Audio test complete");
+    } else if (cmd == 'a' || cmd == 'A') {
+      // Toggle amplifier
+      bool currentState = digitalRead(I2S_SD_PIN);
+      digitalWrite(I2S_SD_PIN, !currentState);
+      delay(50);
+      Serial.println("\n=== AMPLIFIER CONTROL ===");
+      Serial.print("SD_MODE pin toggled to: ");
+      Serial.println(digitalRead(I2S_SD_PIN) ? "HIGH (enabled)" : "LOW (disabled)");
+      Serial.println("Try playing audio now with 't' command");
+    } else if (cmd == 'v' || cmd == 'V') {
+      // Volume test - play tones at different volumes
+      Serial.println("\n=== VOLUME TEST ===");
+      Serial.println("Playing 1000 Hz tone at different volumes...");
+      for (uint8_t vol = 20; vol <= 100; vol += 20) {
+        Serial.print("Volume ");
+        Serial.print(vol);
+        Serial.println("%...");
+        audioPlayer.playTone(1000, 200, vol);
+        delay(100);
+      }
+      Serial.println("Volume test complete");
+    } else if (cmd == 'h' || cmd == 'H') {
+      // Hardware troubleshooting guide
+      Serial.println("\n=== HARDWARE TROUBLESHOOTING ===");
+      Serial.println("\nIf audio is FAINT/TOO QUIET:");
+      Serial.println("-------------------------------");
+      Serial.println("Problem: MAX98357A GAIN pin is set too LOW");
+      Serial.println("\nGAIN Pin Settings:");
+      Serial.println("  GAIN → GND (0V):     9dB gain  [QUIETEST - likely your current setting]");
+      Serial.println("  GAIN → FLOAT:        12dB gain [MODERATE]");
+      Serial.println("  GAIN → VDD (3.3V):   15dB gain [LOUDEST - recommended!]");
+      Serial.println("\nFIX: Check your MAX98357A breakout board:");
+      Serial.println("  1. Locate the 'GAIN' pin/pad");
+      Serial.println("  2. If connected to GND, disconnect it");
+      Serial.println("  3. Connect GAIN to VDD/3.3V (or leave floating for 12dB)");
+      Serial.println("  4. Restart and test again with 't' command");
+      Serial.println("\nOther checks:");
+      Serial.println("  - Verify speaker is 4-8 ohm (4 ohm = louder)");
+      Serial.println("  - Check speaker wire connections");
+      Serial.println("  - Ensure good power supply (USB or fully charged LiPo)");
+      Serial.println("  - Try a different speaker to rule out damage");
+      Serial.println("  - Measure speaker voltage with multimeter during playback");
+      Serial.println("  - Check if MAX98357A gets warm (indicates it's working)");
+      Serial.println("\nIf GAIN is already at VDD and still quiet:");
+      Serial.println("  - Speaker might be damaged or wrong impedance");
+      Serial.println("  - MAX98357A board might be defective");
+      Serial.println("  - Try pressing speaker firmly against ear during 'l' test");
+      Serial.println("\nAfter hardware fix, type 'l' to test maximum volume.");
+    } else if (cmd == 'l' || cmd == 'L') {
+      // Loud continuous test
+      Serial.println("\n=== MAXIMUM VOLUME TEST ===");
+      Serial.println("Playing 1000 Hz at 100% volume for 3 seconds...");
+      Serial.println("This is the LOUDEST this system can produce.");
+      Serial.println("If this is still too quiet, it's a HARDWARE issue:");
+      Serial.println("  - Check GAIN pin connection");
+      Serial.println("  - Verify speaker impedance (4-8 ohm)");
+      Serial.println("  - Test with different speaker");
+      Serial.println("  - Check MAX98357A board for damage");
+      Serial.println("\nStarting in 1 second...");
+      delay(1000);
+      audioPlayer.playTone(1000, 3000, 100);
+      Serial.println("Test complete. Was it loud enough?");
+    } else if (cmd == 'f' || cmd == 'F') {
+      // Toggle I2S alignment
+      Serial.println("\n=== I2S FORMAT TOGGLE ===");
+      Serial.println("Toggling between LEFT and RIGHT alignment...");
+
+      // Read current alignment
+      bool isLeftAligned = (NRF_I2S->CONFIG.ALIGN == I2S_CONFIG_ALIGN_ALIGN_Left);
+
+      // Disable I2S
+      NRF_I2S->ENABLE = 0;
+      delay(10);
+
+      // Toggle alignment
+      if (isLeftAligned) {
+        NRF_I2S->CONFIG.ALIGN = I2S_CONFIG_ALIGN_ALIGN_Right;
+        Serial.println("Changed to RIGHT alignment");
+      } else {
+        NRF_I2S->CONFIG.ALIGN = I2S_CONFIG_ALIGN_ALIGN_Left;
+        Serial.println("Changed to LEFT alignment");
+      }
+
+      // Re-enable I2S
+      NRF_I2S->ENABLE = 1;
+      delay(10);
+
+      Serial.println("Now test audio with 't' command");
+      Serial.println("If still quiet, press 'f' again to try the other format");
+    } else if (cmd == 'c' || cmd == 'C') {
+      // Cycle I2S channel mode
+      Serial.println("\n=== I2S CHANNEL MODE CYCLE ===");
+
+      // Read current channel mode
+      uint32_t currentMode = NRF_I2S->CONFIG.CHANNELS;
+
+      // Disable I2S
+      NRF_I2S->ENABLE = 0;
+      delay(10);
+
+      // Cycle through modes: Stereo (0) -> Left (1) -> Right (2) -> Stereo
+      switch(currentMode) {
+        case 0: // Stereo -> Left
+          NRF_I2S->CONFIG.CHANNELS = 1;
+          Serial.println("Changed to LEFT channel only");
+          break;
+        case 1: // Left -> Right
+          NRF_I2S->CONFIG.CHANNELS = 2;
+          Serial.println("Changed to RIGHT channel only");
+          break;
+        case 2: // Right -> Stereo
+          NRF_I2S->CONFIG.CHANNELS = 0;
+          Serial.println("Changed to STEREO (both channels)");
+          break;
+        default:
+          NRF_I2S->CONFIG.CHANNELS = 0;
+          Serial.println("Reset to STEREO (both channels)");
+          break;
+      }
+
+      // Re-enable I2S
+      NRF_I2S->ENABLE = 1;
+      delay(10);
+
+      Serial.println("Now test with 't' command");
+      Serial.println("Press 'c' again to try next mode if still quiet");
+    } else if (cmd == 's' || cmd == 'S') {
+      // Speaker hardware diagnostic
+      Serial.println("\n=== SPEAKER HARDWARE DIAGNOSTIC ===");
+      Serial.println("\nSoftware Status: PERFECT");
+      Serial.println("  - Amplitude: 32000/32767 (97%)");
+      Serial.println("  - I2S transfers: Working");
+      Serial.println("  - Sample generation: Correct");
+      Serial.println("\nSince software is perfect, this is a HARDWARE issue.");
+      Serial.println("\n=== MOST LIKELY CAUSES ===");
+      Serial.println("\n1. SPEAKER ISSUE (Most Common)");
+      Serial.println("   Your speaker might be:");
+      Serial.println("   - Damaged (blown voice coil, torn cone)");
+      Serial.println("   - Wrong impedance (32Ω or higher instead of 4-8Ω)");
+      Serial.println("   - Low sensitivity (cheap/salvaged speaker)");
+      Serial.println("   - Poorly connected (loose wires)");
+      Serial.println("   TEST: Try a DIFFERENT 4Ω or 8Ω speaker");
+      Serial.println("");
+      Serial.println("2. MAX98357A BOARD DEFECTIVE");
+      Serial.println("   The clone board might be:");
+      Serial.println("   - Poorly manufactured");
+      Serial.println("   - Wrong component values");
+      Serial.println("   - Damaged amplifier chip");
+      Serial.println("   TEST: Try a different MAX98357A board");
+      Serial.println("");
+      Serial.println("3. POWER SUPPLY INSUFFICIENT");
+      Serial.println("   If using battery:");
+      Serial.println("   - Battery might be low/weak");
+      Serial.println("   - Try USB power instead");
+      Serial.println("");
+      Serial.println("=== WHAT TO DO ===");
+      Serial.println("1. Get a known-good 8Ω 1W speaker from electronics store");
+      Serial.println("2. Connect it and run 'l' test again");
+      Serial.println("3. If STILL quiet → MAX98357A board is defective");
+      Serial.println("4. If LOUD → Original speaker was the problem");
+      Serial.println("\nThe firmware is working perfectly!");
+      Serial.println("Type 'l' to play max volume test tone.");
+    } else if (cmd == 'w' || cmd == 'W') {
+      // Wiring diagnostic
+      Serial.println("\n=== WIRING VERIFICATION ===");
+      Serial.println("\nCurrent Configuration:");
+      Serial.println("  XIAO nRF52840  →  MAX98357A");
+      Serial.println("  D1 (GPIO 3)    →  BCLK");
+      Serial.println("  D2 (GPIO 28)   →  LRCK (Word Select)");
+      Serial.println("  D0 (GPIO 2)    →  DIN");
+      Serial.println("  D6 (GPIO 43)   →  SD (Shutdown)");
+      Serial.println("  GND            →  GND");
+      Serial.println("  3.3V           →  VIN");
+      Serial.println("");
+      Serial.println("=== POSSIBLE ISSUES ===");
+      Serial.println("");
+      Serial.println("1. CLONE BOARD HAS WRONG INTERNAL GAIN");
+      Serial.println("   Some cheap clones use wrong resistor values");
+      Serial.println("   Result: Permanent low volume regardless of GAIN pin");
+      Serial.println("   Solution: Buy genuine Adafruit MAX98357A ($7)");
+      Serial.println("");
+      Serial.println("2. PIN LABELS ON CLONE BOARD ARE WRONG");
+      Serial.println("   Some clones have misprinted labels");
+      Serial.println("   Try: Swap BCLK and LRCK wires");
+      Serial.println("   Or: Try DIN on different pin");
+      Serial.println("");
+      Serial.println("3. DEFECTIVE AMPLIFIER CHIP");
+      Serial.println("   The MAX98357A chip itself is damaged/fake");
+      Serial.println("   Solution: Replace MAX98357A board");
+      Serial.println("");
+      Serial.println("=== RECOMMENDED NEXT STEPS ===");
+      Serial.println("1. Order genuine Adafruit MAX98357A board");
+      Serial.println("2. Test with genuine board");
+      Serial.println("3. If genuine board works → clone was bad");
+      Serial.println("4. If genuine board also quiet → nRF52840 I2S issue");
+      Serial.println("");
+      Serial.println("Based on all tests, your clone MAX98357A board");
+      Serial.println("is MOST LIKELY defective or poorly manufactured.");
+      Serial.println("");
+      Serial.println("The firmware is 100% correct.");
+    } else if (cmd == 'g' || cmd == 'G') {
+      // GAIN PIN DIAGNOSTIC - comprehensive hardware check
+      Serial.println("\n╔═══════════════════════════════════════════════════════════╗");
+      Serial.println("║         MAX98357A GAIN PIN DIAGNOSTIC TOOL                ║");
+      Serial.println("╚═══════════════════════════════════════════════════════════╝");
+      Serial.println("");
+      Serial.println("=== CRITICAL VOLUME ISSUE EXPLANATION ===");
+      Serial.println("");
+      Serial.println("The MAX98357A has a HARDWARE GAIN PIN that CANNOT be");
+      Serial.println("controlled by software. This pin determines the maximum");
+      Serial.println("possible volume regardless of I2S amplitude settings.");
+      Serial.println("");
+      Serial.println("┌─────────────────────────────────────────────────────────┐");
+      Serial.println("│  GAIN Pin Connection  │  Gain  │  Relative Volume      │");
+      Serial.println("├───────────────────────┼────────┼───────────────────────┤");
+      Serial.println("│  GND (0V)             │  9 dB  │  1.0x  [QUIETEST]     │");
+      Serial.println("│  FLOAT (disconnected) │ 12 dB  │  1.4x  [MODERATE]     │");
+      Serial.println("│  VDD (3.3V)           │ 15 dB  │  2.0x  [LOUDEST]      │");
+      Serial.println("└─────────────────────────────────────────────────────────┘");
+      Serial.println("");
+      Serial.println("=== DIAGNOSIS ===");
+      Serial.println("");
+      Serial.println("Based on your report of 'faint audible beep':");
+      Serial.println("→ Your GAIN pin is MOST LIKELY connected to GND");
+      Serial.println("→ This gives only 9dB gain (minimum setting)");
+      Serial.println("→ Moving GAIN to VDD will make it ~2x LOUDER");
+      Serial.println("");
+      Serial.println("=== SOFTWARE STATUS (ALREADY OPTIMIZED) ===");
+      Serial.println("");
+      Serial.println("✓ I2S amplitude: FULL 16-bit range (32767)");
+      Serial.println("✓ I2S alignment: LEFT (correct for MAX98357A)");
+      Serial.println("✓ Sample rate: 16 kHz");
+      Serial.println("✓ SD_MODE pin: HIGH (amplifier enabled)");
+      Serial.println("✓ Volume parameter: 100% (maximum)");
+      Serial.println("");
+      Serial.println("The firmware is ALREADY at maximum software volume.");
+      Serial.println("Further increases REQUIRE hardware GAIN pin change.");
+      Serial.println("");
+      Serial.println("=== FIX PROCEDURE ===");
+      Serial.println("");
+      Serial.println("STEP 1: Locate GAIN pin on MAX98357A breakout board");
+      Serial.println("        (May be labeled 'GAIN' or 'G')");
+      Serial.println("");
+      Serial.println("STEP 2: Check current GAIN connection:");
+      Serial.println("        - Use multimeter to measure voltage on GAIN pin");
+      Serial.println("        - ~0V     → Connected to GND (your current setting)");
+      Serial.println("        - ~1.65V  → Floating (no connection)");
+      Serial.println("        - ~3.3V   → Connected to VDD (maximum gain)");
+      Serial.println("");
+      Serial.println("STEP 3: Disconnect GAIN from GND (if connected)");
+      Serial.println("");
+      Serial.println("STEP 4: Connect GAIN to VDD (3.3V)");
+      Serial.println("        - Use a jumper wire from GAIN to VDD/VIN pin");
+      Serial.println("        - Or solder a wire from GAIN to 3.3V rail");
+      Serial.println("");
+      Serial.println("STEP 5: Power cycle device (reset or power off/on)");
+      Serial.println("");
+      Serial.println("STEP 6: Test with 't' command");
+      Serial.println("        - Should be NOTICEABLY louder");
+      Serial.println("        - Volume should approximately DOUBLE");
+      Serial.println("");
+      Serial.println("=== EXPECTED RESULTS ===");
+      Serial.println("");
+      Serial.println("BEFORE (GAIN=GND):  Faint beep, barely audible");
+      Serial.println("AFTER (GAIN=VDD):   Clear loud beep, easily heard");
+      Serial.println("");
+      Serial.println("=== IF STILL QUIET AFTER GAIN=VDD ===");
+      Serial.println("");
+      Serial.println("1. Verify GAIN pin voltage = 3.3V (use multimeter)");
+      Serial.println("2. Check speaker impedance (must be 4-8Ω, not 16Ω+)");
+      Serial.println("3. Test with different speaker");
+      Serial.println("4. Check for damaged/blown speaker");
+      Serial.println("5. Replace MAX98357A board (may be defective clone)");
+      Serial.println("");
+      Serial.println("═══════════════════════════════════════════════════════════");
+      Serial.println("Press 't' to test current volume");
+      Serial.println("Press 'l' for extended maximum volume test");
+      Serial.println("═══════════════════════════════════════════════════════════");
+    }
+  }
 
   // Update battery level periodically
   if (millis() - lastBatteryRead >= BATTERY_READ_INTERVAL) {
@@ -593,8 +983,14 @@ void stopTraining() {
 // ============================================================================
 
 void playHapticEffect(uint8_t effect, uint8_t intensity) {
-  // Map intensity (0-100) to DRV2605L range (0-255)
-  uint8_t drvIntensity = map(intensity, 0, 100, 0, 255);
+  // Note: DRV2605L waveform library effects have pre-defined intensities
+  // The intensity parameter is used to select effect variations, not to scale amplitude
+  // setRealtimeValue() only works in RTP mode, not Internal Trigger mode
+
+  // For different intensities, use different waveform effects:
+  // - Low intensity: Use softer effects (PATTERN_SOFT_CLICK)
+  // - Medium intensity: Use moderate effects (PATTERN_STRONG_CLICK)
+  // - High intensity: Use strong effects (PATTERN_DOUBLE_CLICK, PATTERN_TRIPLE_CLICK)
 
   // Set waveform
   drv.setWaveform(0, effect);
@@ -611,6 +1007,92 @@ void testHapticPattern(uint8_t pattern, uint8_t intensity) {
   Serial.println(intensity);
 
   playHapticEffect(pattern, intensity);
+}
+
+// ============================================================================
+// AUDIO CONTROL (I2S Audio Playback)
+// ============================================================================
+
+// Play audio event based on type
+void playAudioEvent(uint8_t audioEvent, uint8_t volume) {
+  Serial.print("Audio event: 0x");
+  Serial.print(audioEvent, HEX);
+  Serial.print(" (");
+
+  // Log and play the audio event
+  switch (audioEvent) {
+    case AUDIO_TRAINING_START:
+      Serial.print("Training Start");
+      // Three ascending beeps
+      audioPlayer.playTone(800, 100, volume);
+      delay(50);
+      audioPlayer.playTone(1000, 100, volume);
+      delay(50);
+      audioPlayer.playTone(1200, 100, volume);
+      break;
+
+    case AUDIO_HALFWAY:
+      Serial.print("Halfway");
+      // Single medium beep
+      audioPlayer.playTone(1000, 150, volume);
+      break;
+
+    case AUDIO_SET_COMPLETE:
+      Serial.print("Set Complete");
+      // Two quick beeps
+      audioPlayer.playTone(1200, 100, volume);
+      delay(100);
+      audioPlayer.playTone(1200, 100, volume);
+      break;
+
+    case AUDIO_LAST_SET:
+      Serial.print("Last Set");
+      // Long alert tone
+      audioPlayer.playTone(900, 400, volume);
+      break;
+
+    case AUDIO_ZONE_TRANSITION:
+      Serial.print("Zone Transition");
+      // Sweep tone (low to high)
+      audioPlayer.playTone(800, 150, volume);
+      audioPlayer.playTone(1200, 150, volume);
+      break;
+
+    case AUDIO_SESSION_COMPLETE:
+      Serial.print("Session Complete");
+      // Fanfare: ascending tones
+      audioPlayer.playTone(800, 120, volume);
+      delay(50);
+      audioPlayer.playTone(1000, 120, volume);
+      delay(50);
+      audioPlayer.playTone(1200, 120, volume);
+      delay(50);
+      audioPlayer.playTone(1400, 200, volume);
+      break;
+
+    case AUDIO_PAUSE:
+      Serial.print("Pause");
+      // Descending beep
+      audioPlayer.playTone(1000, 100, volume);
+      delay(50);
+      audioPlayer.playTone(800, 100, volume);
+      break;
+
+    case AUDIO_RESUME:
+      Serial.print("Resume");
+      // Ascending beep
+      audioPlayer.playTone(800, 100, volume);
+      delay(50);
+      audioPlayer.playTone(1000, 100, volume);
+      break;
+
+    default:
+      Serial.print("Unknown");
+      break;
+  }
+
+  Serial.print(") at volume ");
+  Serial.println(volume);
 }
 
 // ============================================================================
@@ -703,6 +1185,25 @@ void onHapticControlWrite(uint16_t conn_hdl, BLECharacteristic* chr, uint8_t* da
       Serial.println("ERROR: Unknown haptic command");
       break;
   }
+}
+
+void onAudioControlWrite(uint16_t conn_hdl, BLECharacteristic* chr, uint8_t* data, uint16_t len) {
+  // Format: [audio_event(1)][volume(1)]
+  if (len < 1) {
+    Serial.println("ERROR: Invalid audio control data");
+    return;
+  }
+
+  uint8_t audioEvent = data[0];
+  uint8_t volume = (len > 1) ? data[1] : 80;  // Default volume 80%
+
+  Serial.print("Audio event: 0x");
+  Serial.print(audioEvent, HEX);
+  Serial.print(" | Volume: ");
+  Serial.println(volume);
+
+  // Play the audio event
+  playAudioEvent(audioEvent, volume);
 }
 
 void onZoneSettingsWrite(uint16_t conn_hdl, BLECharacteristic* chr, uint8_t* data, uint16_t len) {

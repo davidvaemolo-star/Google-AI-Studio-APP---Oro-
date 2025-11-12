@@ -51,7 +51,8 @@ fun OroApp(
                     onToggleSeatLock = viewModel::toggleSeatOrderLock,
                     onConnectAll = viewModel::connectAllDevices,
                     onStartCalibration = viewModel::startCalibration,
-                    onStopCalibration = viewModel::stopCalibration
+                    onStopCalibration = viewModel::stopCalibration,
+                    onTestAudio = { viewModel.testAudioBroadcast() }
                 )
 
                 AppDestination.Training -> TrainingScreen(

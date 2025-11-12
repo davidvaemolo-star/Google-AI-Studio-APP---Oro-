@@ -1,0 +1,272 @@
+╔════════════════════════════════════════════════════════════════════════════╗
+║                    MAX98357A GAIN PIN WIRING GUIDE                         ║
+║                     FOR MAXIMUM VOLUME OUTPUT                              ║
+╚════════════════════════════════════════════════════════════════════════════╝
+
+═══════════════════════════════════════════════════════════════════════════════
+ CURRENT CONFIGURATION (QUIET - 9dB GAIN)
+═══════════════════════════════════════════════════════════════════════════════
+
+    nRF52840 XIAO                       MAX98357A Breakout
+    ┌─────────────┐                    ┌──────────────────┐
+    │             │                    │                  │
+    │  D1 (BCLK) ─┼───────────────────▶│ BCLK             │
+    │             │                    │                  │
+    │  D2 (LRCLK)─┼───────────────────▶│ LRCK/LRC         │
+    │             │                    │                  │
+    │  D0 (DIN)  ─┼───────────────────▶│ DIN              │
+    │             │                    │                  │
+    │  D6 (SD)   ─┼───────────────────▶│ SD               │
+    │             │                    │                  │
+    │  3.3V      ─┼───────────────────▶│ VIN              │
+    │             │    ┌──────────────▶│ GAIN  ← WRONG!   │
+    │  GND       ─┼────┴───────────────│ GND              │
+    │             │                    │                  │
+    └─────────────┘                    └──────────────────┘
+                                              │
+                                              ▼
+                                        8Ω Speaker
+                                    (FAINT/QUIET OUTPUT)
+
+    ❌ PROBLEM: GAIN connected to GND = Only 9dB gain
+
+
+═══════════════════════════════════════════════════════════════════════════════
+ TARGET CONFIGURATION (LOUD - 15dB GAIN) ⭐
+═══════════════════════════════════════════════════════════════════════════════
+
+    nRF52840 XIAO                       MAX98357A Breakout
+    ┌─────────────┐                    ┌──────────────────┐
+    │             │    ┌──────────────▶│ BCLK             │
+    │  D1 (BCLK) ─┼────┘               │                  │
+    │             │    ┌──────────────▶│ LRCK/LRC         │
+    │  D2 (LRCLK)─┼────┘               │                  │
+    │             │    ┌──────────────▶│ DIN              │
+    │  D0 (DIN)  ─┼────┘               │                  │
+    │             │    ┌──────────────▶│ SD               │
+    │  D6 (SD)   ─┼────┘               │                  │
+    │             │    ┌──────────────▶│ VIN              │
+    │  3.3V      ─┼────┴──────────────▶│ GAIN  ← CORRECT! │
+    │             │                    │                  │
+    │  GND       ─┼───────────────────▶│ GND              │
+    │             │                    │                  │
+    └─────────────┘                    └──────────────────┘
+                                              │
+                                              ▼
+                                        8Ω Speaker
+                                    (LOUD/CLEAR OUTPUT)
+
+    ✓ SOLUTION: GAIN connected to VDD (3.3V) = 15dB gain (~2x LOUDER!)
+
+
+═══════════════════════════════════════════════════════════════════════════════
+ ALTERNATIVE: MODERATE VOLUME (12dB GAIN)
+═══════════════════════════════════════════════════════════════════════════════
+
+    nRF52840 XIAO                       MAX98357A Breakout
+    ┌─────────────┐                    ┌──────────────────┐
+    │             │                    │                  │
+    │  D1 (BCLK) ─┼───────────────────▶│ BCLK             │
+    │             │                    │                  │
+    │  D2 (LRCLK)─┼───────────────────▶│ LRCK/LRC         │
+    │             │                    │                  │
+    │  D0 (DIN)  ─┼───────────────────▶│ DIN              │
+    │             │                    │                  │
+    │  D6 (SD)   ─┼───────────────────▶│ SD               │
+    │             │                    │                  │
+    │  3.3V      ─┼───────────────────▶│ VIN              │
+    │             │                    │ GAIN (floating)  │
+    │  GND       ─┼───────────────────▶│ GND              │
+    │             │                    │                  │
+    └─────────────┘                    └──────────────────┘
+                                              │
+                                              ▼
+                                        8Ω Speaker
+                                    (MODERATE OUTPUT)
+
+    ℹ GAIN not connected (floating) = 12dB gain (middle setting)
+
+
+═══════════════════════════════════════════════════════════════════════════════
+ GAIN PIN VOLTAGE MEASUREMENT
+═══════════════════════════════════════════════════════════════════════════════
+
+Use a multimeter (DC voltage mode) to measure the GAIN pin:
+
+    GAIN Pin Voltage  │  Configuration  │  Gain Level  │  Volume
+    ──────────────────┼─────────────────┼──────────────┼─────────────────
+    ~0.0V             │  Connected GND  │  9 dB        │  1.0x (quietest)
+    ~1.65V (floating) │  Not connected  │  12 dB       │  1.4x (moderate)
+    ~3.3V             │  Connected VDD  │  15 dB       │  2.0x (LOUDEST)
+
+
+═══════════════════════════════════════════════════════════════════════════════
+ STEP-BY-STEP FIX PROCEDURE
+═══════════════════════════════════════════════════════════════════════════════
+
+    ┌─────────────────────────────────────────────────────────────────────┐
+    │ STEP 1: Power off the nRF52840                                      │
+    └─────────────────────────────────────────────────────────────────────┘
+
+    ┌─────────────────────────────────────────────────────────────────────┐
+    │ STEP 2: Locate the GAIN pin on MAX98357A breakout board             │
+    │         (Usually labeled "GAIN", "G", or near center of board)      │
+    └─────────────────────────────────────────────────────────────────────┘
+
+    ┌─────────────────────────────────────────────────────────────────────┐
+    │ STEP 3: Check if GAIN is currently connected to GND                 │
+    │         - Look for jumper wire or trace connecting GAIN to GND      │
+    │         - Some boards have a solder jumper (solder bridge)          │
+    └─────────────────────────────────────────────────────────────────────┘
+
+    ┌─────────────────────────────────────────────────────────────────────┐
+    │ STEP 4: Disconnect GAIN from GND                                    │
+    │         - Remove jumper wire, OR                                    │
+    │         - Desolder solder bridge (use soldering iron + solder wick) │
+    └─────────────────────────────────────────────────────────────────────┘
+
+    ┌─────────────────────────────────────────────────────────────────────┐
+    │ STEP 5: Connect GAIN to VDD (3.3V)                                  │
+    │         OPTION A: Jumper wire from GAIN to VIN/VDD pin              │
+    │         OPTION B: Solder wire from GAIN to 3.3V rail/trace          │
+    │         OPTION C: Solder bridge between GAIN and VDD pads (if PCB   │
+    │                   has them adjacent)                                │
+    └─────────────────────────────────────────────────────────────────────┘
+
+    ┌─────────────────────────────────────────────────────────────────────┐
+    │ STEP 6: Verify with multimeter (DC voltage)                         │
+    │         - Power on nRF52840                                         │
+    │         - Measure voltage between GAIN pin and GND                  │
+    │         - Should read ~3.3V (±0.1V)                                 │
+    └─────────────────────────────────────────────────────────────────────┘
+
+    ┌─────────────────────────────────────────────────────────────────────┐
+    │ STEP 7: Power cycle device (reset or power off/on)                  │
+    │         - GAIN setting is latched at power-up                       │
+    │         - Must power cycle for new GAIN setting to take effect      │
+    └─────────────────────────────────────────────────────────────────────┘
+
+    ┌─────────────────────────────────────────────────────────────────────┐
+    │ STEP 8: Test audio output                                           │
+    │         - Upload updated firmware (if not already done)             │
+    │         - Open serial monitor (115200 baud)                         │
+    │         - Type 't' to play test tone                                │
+    │         - Should be NOTICEABLY louder (~2x volume increase!)        │
+    └─────────────────────────────────────────────────────────────────────┘
+
+
+═══════════════════════════════════════════════════════════════════════════════
+ TROUBLESHOOTING
+═══════════════════════════════════════════════════════════════════════════════
+
+    SYMPTOM: GAIN pin voltage reads 0V even after connecting to VDD
+    ────────────────────────────────────────────────────────────────────────
+    CAUSE:   Short circuit or incorrect wiring
+    FIX:     - Check for solder bridges on MAX98357A board
+             - Verify wire is connected to VDD/VIN (not GND)
+             - Check continuity between GAIN and VDD with multimeter
+
+    ────────────────────────────────────────────────────────────────────────
+
+    SYMPTOM: GAIN pin voltage reads 3.3V but audio still quiet
+    ────────────────────────────────────────────────────────────────────────
+    CAUSE:   Speaker or MAX98357A board issue
+    FIX:     - Verify speaker impedance is 4-8Ω (measure with multimeter)
+             - Test with different speaker
+             - Check for damaged/blown speaker (torn cone, open coil)
+             - Replace MAX98357A board (may be defective)
+
+    ────────────────────────────────────────────────────────────────────────
+
+    SYMPTOM: No audio at all after GAIN modification
+    ────────────────────────────────────────────────────────────────────────
+    CAUSE:   Wiring error or damaged component
+    FIX:     - Check all I2S connections (BCLK, LRCK, DIN)
+             - Verify SD pin is HIGH (use serial command 'i' to check)
+             - Ensure GND is connected between nRF52840 and MAX98357A
+             - Disconnect GAIN from VDD and leave floating (try 12dB mode)
+             - Power cycle device completely (not just reset)
+
+    ────────────────────────────────────────────────────────────────────────
+
+    SYMPTOM: Audio distorted or crackling after GAIN change
+    ────────────────────────────────────────────────────────────────────────
+    CAUSE:   Speaker overdriven or amplifier clipping
+    FIX:     - Reduce software volume to 80% (modify playTone calls)
+             - Use higher impedance speaker (8Ω instead of 4Ω)
+             - Move GAIN back to FLOAT (12dB) if 15dB is too much
+             - Check power supply (weak battery can cause distortion)
+
+
+═══════════════════════════════════════════════════════════════════════════════
+ EXPECTED VOLUME COMPARISON
+═══════════════════════════════════════════════════════════════════════════════
+
+    ┌──────────────────────────────────────────────────────────────────┐
+    │                        VOLUME LEVELS                             │
+    ├──────────────────┬───────────────┬───────────────────────────────┤
+    │ GAIN Setting     │ Gain (dB)     │ Perceived Loudness            │
+    ├──────────────────┼───────────────┼───────────────────────────────┤
+    │ GND (0V)         │   9 dB        │ ▓░░░░░░░░░ 25% FAINT          │
+    │ FLOAT (~1.65V)   │  12 dB        │ ▓▓▓▓▓░░░░░ 50% MODERATE       │
+    │ VDD (3.3V)       │  15 dB        │ ▓▓▓▓▓▓▓▓▓▓ 100% LOUD ⭐       │
+    └──────────────────┴───────────────┴───────────────────────────────┘
+
+    BEFORE FIX (GAIN=GND):   Faint beep, must hold speaker to ear
+    AFTER FIX (GAIN=VDD):    Loud clear beep, easily heard from 2+ feet
+
+
+═══════════════════════════════════════════════════════════════════════════════
+ BILL OF MATERIALS (if replacing board)
+═══════════════════════════════════════════════════════════════════════════════
+
+    Recommended (Genuine):
+    ├─ Adafruit MAX98357A I2S Class D Amplifier Breakout ($7.95)
+    │  Product ID: 3006
+    │  URL: https://www.adafruit.com/product/3006
+    │  Features: Genuine Texas Instruments MAX98357A chip
+    │             Quality PCB and components
+    │             Tested and verified
+    └─ Speaker: 4Ω or 8Ω, 1W+ (4Ω will be louder)
+
+    Alternative (if budget constrained):
+    ├─ Generic MAX98357A clone from Amazon/AliExpress ($2-5)
+    │  Warning: Quality varies, some may have low gain issues
+    │           Some clones use wrong resistor values
+    └─ Test with genuine board if clone doesn't work
+
+
+═══════════════════════════════════════════════════════════════════════════════
+ REFERENCES
+═══════════════════════════════════════════════════════════════════════════════
+
+    MAX98357A Datasheet:
+    https://datasheets.maximintegrated.com/en/ds/MAX98357A-MAX98357B.pdf
+
+    GAIN Pin Configuration (page 18, Table 7):
+    ┌──────────────┬───────────────┐
+    │ GAIN Pin     │ Gain Setting  │
+    ├──────────────┼───────────────┤
+    │ GND          │  9 dB         │
+    │ Float        │ 12 dB         │
+    │ VDD          │ 15 dB         │
+    └──────────────┴───────────────┘
+
+    Adafruit MAX98357A Guide:
+    https://learn.adafruit.com/adafruit-max98357-i2s-class-d-mono-amp
+
+    Firmware Serial Commands:
+    - Type 'g' for GAIN PIN DIAGNOSTIC
+    - Type 't' for audio test (now 100% volume)
+    - Type 'i' for I2S configuration info
+
+
+═══════════════════════════════════════════════════════════════════════════════
+
+END OF GAIN PIN WIRING GUIDE
+
+For software fixes and additional troubleshooting, see:
+- VOLUME_FIX.md (comprehensive guide)
+- VOLUME_CHANGES_SUMMARY.md (changes made)
+
+═══════════════════════════════════════════════════════════════════════════════

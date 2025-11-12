@@ -54,6 +54,7 @@ class BleManager(private val context: Context) {
         val CONNECTION_STATUS_UUID = UUID.fromString("12340004-1234-5678-1234-56789abcdef0")
         val STROKE_EVENT_UUID = UUID.fromString("12340005-1234-5678-1234-56789abcdef0")
         val CALIBRATION_UUID = UUID.fromString("12340006-1234-5678-1234-56789abcdef0")
+        val AUDIO_CONTROL_UUID = UUID.fromString("12340007-1234-5678-1234-56789abcdef0")
 
         // Standard BLE Battery Service UUIDs
         val BATTERY_SERVICE_UUID = UUID.fromString("0000180F-0000-1000-8000-00805f9b34fb")
@@ -80,6 +81,16 @@ class BleManager(private val context: Context) {
         const val PATTERN_LONG_ALERT: Byte = 24
         const val PATTERN_ALERT_750MS: Byte = PATTERN_LONG_ALERT
         const val PATTERN_TRANSITION: Byte = 51
+
+        // Audio Events
+        const val AUDIO_TRAINING_START: Byte = 0x01
+        const val AUDIO_HALFWAY: Byte = 0x02
+        const val AUDIO_SET_COMPLETE: Byte = 0x03
+        const val AUDIO_LAST_SET: Byte = 0x04
+        const val AUDIO_ZONE_TRANSITION: Byte = 0x05
+        const val AUDIO_SESSION_COMPLETE: Byte = 0x06
+        const val AUDIO_PAUSE: Byte = 0x07
+        const val AUDIO_RESUME: Byte = 0x08
 
         // Device States
         const val STATE_IDLE: Byte = 0x00
@@ -495,6 +506,17 @@ class BleManager(private val context: Context) {
                     gatt.setCharacteristicNotification(deviceStatusChar, true)
                     val descriptor = deviceStatusChar.getDescriptor(CLIENT_CHARACTERISTIC_CONFIG_UUID)
                     writeDescriptorCompat(gatt, descriptor, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)
+                    Log.d(TAG, "  ✓ Device Status characteristic enabled for $deviceId")
+                } else {
+                    Log.w(TAG, "  ✗ Device Status characteristic NOT FOUND for $deviceId")
+                }
+
+                // Verify Audio Control characteristic is available
+                val audioControlChar = hapticService.getCharacteristic(AUDIO_CONTROL_UUID)
+                if (audioControlChar != null) {
+                    Log.d(TAG, "  ✓ Audio Control characteristic FOUND for $deviceId")
+                } else {
+                    Log.w(TAG, "  ✗ Audio Control characteristic NOT FOUND for $deviceId - audio prompts will not work!")
                 }
 
                 // Enable stroke event notifications if this is the pacer (Seat 1)
@@ -504,7 +526,9 @@ class BleManager(private val context: Context) {
                         gatt.setCharacteristicNotification(strokeEventChar, true)
                         val descriptor = strokeEventChar.getDescriptor(CLIENT_CHARACTERISTIC_CONFIG_UUID)
                         writeDescriptorCompat(gatt, descriptor, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)
-                        Log.d(TAG, "Enabled stroke event notifications for pacer: ${gatt.device.address}")
+                        Log.d(TAG, "  ✓ Enabled stroke event notifications for pacer: ${gatt.device.address}")
+                    } else {
+                        Log.w(TAG, "  ✗ Stroke Event characteristic NOT FOUND for pacer: ${gatt.device.address}")
                     }
                 }
 
@@ -999,6 +1023,88 @@ class BleManager(private val context: Context) {
         Log.d(TAG, "=== broadcastHaptic END ===")
 
         return BroadcastResult(attempted, succeeded)
+    }
+
+    fun broadcastAudio(
+        audioEvent: Byte,
+        volume: Int = 80,
+        includePacer: Boolean = true
+    ): BroadcastResult {
+        var attempted = 0
+        var succeeded = 0
+
+        Log.d(TAG, "=== broadcastAudio START ===")
+        Log.d(TAG, "  Audio Event: 0x${String.format("%02X", audioEvent)}, Volume: $volume, includePacer: $includePacer")
+        Log.d(TAG, "  Total devices in deviceGattMap: ${deviceGattMap.size}")
+        Log.d(TAG, "  Pacer device ID: $pacerDeviceId")
+
+        deviceGattMap.keys.forEach { deviceId ->
+            val isPacer = deviceId == pacerDeviceId
+            val isConnected = deviceStatusMap[deviceId] == DeviceStatus.Connected
+            val isReady = deviceReadyMap[deviceId] == true
+            val shouldSend = isConnected && isReady && (includePacer || !isPacer)
+
+            Log.d(TAG, "  Device $deviceId: isPacer=$isPacer, connected=$isConnected, ready=$isReady, shouldSend=$shouldSend")
+
+            if (shouldSend) {
+                attempted++
+                val result = sendAudioCommand(deviceId, audioEvent, volume)
+                if (result) {
+                    succeeded++
+                    Log.d(TAG, "    ✓ SUCCESS sending audio to $deviceId")
+                } else {
+                    Log.w(TAG, "    ✗ FAILED sending audio to $deviceId")
+                }
+            }
+        }
+
+        if (attempted == 0) {
+            Log.w(TAG, "broadcastAudio: NO ELIGIBLE DEVICES (includePacer=$includePacer, totalDevices=${deviceGattMap.size})")
+        } else if (succeeded != attempted) {
+            Log.w(TAG, "broadcastAudio PARTIAL SUCCESS: $succeeded / $attempted succeeded")
+        } else {
+            Log.d(TAG, "broadcastAudio COMPLETE SUCCESS: $succeeded / $attempted devices")
+        }
+        Log.d(TAG, "=== broadcastAudio END ===")
+
+        return BroadcastResult(attempted, succeeded)
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun sendAudioCommand(deviceId: String, audioEvent: Byte, volume: Int): Boolean {
+        if (!hasRequiredPermissions()) {
+            Log.w(TAG, "sendAudioCommand failed for $deviceId: Missing Bluetooth permissions")
+            return false
+        }
+
+        val gatt = deviceGattMap[deviceId] ?: run {
+            Log.w(TAG, "sendAudioCommand failed for $deviceId: GATT connection not found")
+            return false
+        }
+
+        val hapticService = gatt.getService(ORO_HAPTIC_SERVICE_UUID) ?: run {
+            Log.w(TAG, "sendAudioCommand failed for $deviceId: Oro Haptic Service not found")
+            return false
+        }
+
+        val audioChar = hapticService.getCharacteristic(AUDIO_CONTROL_UUID) ?: run {
+            Log.w(TAG, "sendAudioCommand failed for $deviceId: Audio Control characteristic not found (firmware may need update)")
+            return false
+        }
+
+        // Clamp volume to 0-100
+        val clampedVolume = volume.coerceIn(0, 100)
+
+        val data = byteArrayOf(audioEvent, clampedVolume.toByte())
+        val result = writeCharacteristicCompat(gatt, audioChar, data, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT)
+
+        if (result) {
+            Log.d(TAG, "Audio command sent successfully to $deviceId: event=0x${String.format("%02X", audioEvent)}, volume=$clampedVolume")
+        } else {
+            Log.w(TAG, "Audio command write failed for $deviceId")
+        }
+
+        return result
     }
 
     // Calibration functions
