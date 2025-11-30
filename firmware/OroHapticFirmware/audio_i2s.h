@@ -3,10 +3,10 @@
  *
  * Hardware: nRF52840 + MAX98357A I2S Audio Amplifier
  *
- * Pin Configuration (XIAO nRF52840):
- * - D1 (GPIO P0.03) → BCLK (Bit Clock)
- * - D2 (GPIO P0.28) → LRCLK (Left/Right Clock / Word Select)
- * - D0 (GPIO P0.02) → DIN (Data Input)
+ * Pin Configuration (XIAO nRF52840 Sense PLUS - Castellated I2S Pins):
+ * - P0.19 (GPIO 19) → BCLK (Bit Clock)
+ * - P1.01 (GPIO 33) → LRCLK (Left/Right Clock / Word Select)
+ * - P0.15 (GPIO 15) → DIN (Data Input)
  * - D6 (GPIO P1.11 = 43) → SD (Shutdown, active-high)
  *
  * MAX98357A Setup:
@@ -15,8 +15,9 @@
  * - Speaker: 4Ω or 8Ω, 1W max
  *
  * Sample Rate: 16kHz (configurable)
- * Bit Depth: 16-bit
- * Channels: Stereo (mono signal duplicated to both channels)
+ * Bit Depth: 16-bit per channel
+ * Channels: Stereo (mono source in left channel, right channel silent)
+ * Alignment: Left-aligned (standard I2S format)
  */
 
 #ifndef AUDIO_I2S_H
@@ -25,11 +26,11 @@
 #include <Arduino.h>
 
 // Pin definitions - Use ACTUAL GPIO NUMBERS from nRF52840 chip
-// XIAO nRF52840 pin mapping: D0=GPIO2, D1=GPIO3, D2=GPIO28
-// These must be the ACTUAL GPIO numbers, NOT Arduino D-numbers!
-#define I2S_SCK_PIN   3   // D1 = GPIO P0.03 - Bit Clock (BCLK)
-#define I2S_LRCK_PIN  28  // D2 = GPIO P0.28 - Left/Right Clock (LRCLK)
-#define I2S_SDOUT_PIN 2   // D0 = GPIO P0.02 - Data Out (DIN to MAX98357A)
+// XIAO nRF52840 Sense PLUS - Dedicated I2S pins on CASTELLATED HOLES (back of board)
+// P1.01 = Port 1, Pin 1 = GPIO 33 (Port 1 pins = 32 + pin number)
+#define I2S_SCK_PIN   19  // P0.19 (castellated) - Bit Clock (BCLK)
+#define I2S_LRCK_PIN  33  // P1.01 (castellated) - Word Select (LRCLK/WS)
+#define I2S_SDOUT_PIN 15  // P0.15 (castellated) - Data Out (DIN to MAX98357A)
 
 // SD_MODE control pin for power management (use Arduino pin number for pinMode/digitalWrite)
 #define SD_MODE_PIN   D6  // D6 Arduino pin - Shutdown mode control (HIGH = enabled)
@@ -65,6 +66,14 @@ public:
     void playMelody(const uint16_t* frequencies, const uint16_t* durations, uint8_t count, uint8_t volume);
 
     /**
+     * Play pre-recorded audio from flash memory (PROGMEM)
+     * @param buffer Pointer to audio samples in flash (PROGMEM)
+     * @param sampleCount Number of samples in buffer
+     * @param volume Volume level (0-100)
+     */
+    void playBuffer(const int16_t* buffer, uint32_t sampleCount, uint8_t volume);
+
+    /**
      * Stop I2S playback and disable peripheral
      */
     void stop();
@@ -86,7 +95,10 @@ public:
     bool isPlaying();
 
 private:
-    uint32_t audioBuffer[AUDIO_BUFFER_SIZE];  // 32-bit stereo samples (L+R channels)
+    uint32_t audioBuffer0[AUDIO_BUFFER_SIZE];  // Double buffer 0
+    uint32_t audioBuffer1[AUDIO_BUFFER_SIZE];  // Double buffer 1
+    uint32_t* currentBuffer;                   // Pointer to current buffer
+    uint8_t currentBufferIndex = 0;            // 0 or 1
     bool initialized = false;
     bool playing = false;
 
@@ -106,13 +118,24 @@ private:
     /**
      * Start I2S DMA transfer
      * @param sampleCount Number of samples to transfer
+     * @param isFirstChunk True if this is the first chunk (will call TASKS_START)
      */
-    void startTransfer(uint16_t sampleCount);
+    void startTransfer(uint16_t sampleCount, bool isFirstChunk = true);
 
     /**
-     * Wait for I2S transfer to complete
+     * Wait for DMA to latch the buffer pointer
      */
-    void waitForCompletion(uint16_t sampleCount);
+    void waitForBufferLatch();
+
+    /**
+     * Wait for the final chunk to finish playing
+     */
+    void waitForFinalChunk(uint16_t sampleCount);
+
+    /**
+     * Swap between double buffers
+     */
+    void swapBuffers();
 };
 
 #endif // AUDIO_I2S_H

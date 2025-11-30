@@ -1,20 +1,64 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
-</div>
+# Oro Haptic Paddle - Canoeing Training System
 
-# Run and deploy your AI Studio app
+An Android-based training system that uses haptic feedback and audio cues to improve crew synchronization in outrigger canoeing.
 
-This contains everything you need to run your app locally.
+## System Architecture
 
-View your app in AI Studio: https://ai.studio/apps/drive/15yhaXA6INvr3DMFeyY0blDFivWiydYx_
+**Oro Haptic Paddle** consists of two main components:
 
-## Run Locally
+1. **Android App** (`android-app/`) - Mobile training application
+2. **Firmware** (`firmware/`) - nRF52840-based hardware devices
 
-**Prerequisites:**  Node.js
+## Hardware
 
+- **MCU**: Seeed XIAO nRF52840 Sense
+- **Haptic Driver**: DRV2605L (I2C)
+- **Audio Output**: MAX98357A (I2S)
+- **Sensors**: LSM6DS3 IMU (built-in)
+- **Communication**: Bluetooth Low Energy (BLE 5.0)
 
-1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
+## Android App Setup
+
+**Prerequisites:** Android Studio, Android SDK 34+
+
+1. Open `android-app/` in Android Studio
+2. Build and run on physical Android device (BLE required)
+3. Grant Bluetooth and location permissions when prompted
+
+## Firmware Setup
+
+**Prerequisites:** Arduino IDE, Adafruit nRF52 board support
+
+1. Install board support via Arduino Board Manager:
+   - Add URL: `https://adafruit.github.io/arduino-board-index/package_adafruit_index.json`
+   - Install "Adafruit nRF52 by Adafruit"
+
+2. Install required libraries:
+   - Adafruit BusIO
+   - Adafruit DRV2605 Library
+   - Arduino LSM6DS3
+
+3. Open `firmware/OroHapticFirmware/OroHapticFirmware.ino`
+4. Select board: "Seeed XIAO nRF52840 Sense"
+5. Upload to device
+
+## Features
+
+- **Stroke Detection**: Real-time paddle stroke analysis using IMU
+- **Haptic Feedback**: Zone-specific vibration patterns for training intensity
+- **Audio Cues**: I2S audio announcements for training milestones
+- **Multi-Device Sync**: Supports up to 6 devices with pacer-follower architecture
+- **Training Zones**: Configurable zones with custom stroke counts, sets, and SPM targets
+
+## Development Status
+
+This system is under active development. Recent improvements:
+- ✅ Fixed I2S audio (mono left-channel mode)
+- ✅ Enhanced stroke detection reliability
+- ✅ Improved BLE device discovery
+- 🚧 Calibration UI (in progress)
+- 🚧 Command acknowledgments (in progress)
+
+## License
+
+Proprietary - All rights reserved

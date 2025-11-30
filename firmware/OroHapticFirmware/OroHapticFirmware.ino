@@ -24,6 +24,7 @@
 #include <math.h>
 #include "LSM6DS3.h"  // Use Seeed_Arduino_LSM6DS3 library
 #include "audio_i2s.h"  // I2S audio playback for MAX98357A
+#include "audio_prompts.h"  // Voice prompt audio data
 
 // ============================================================================
 // HARDWARE CONFIGURATION
@@ -228,7 +229,7 @@ StrokeDetectionState strokeDetection = {
 // Calibration State
 struct CalibrationState {
   bool active;
-  uint8_t sampleCount;
+  uint8_t strokeCount;  // Count actual strokes, not samples
   float maxAccelSeen;
   float minAccelSeen;
 };
@@ -1013,86 +1014,116 @@ void testHapticPattern(uint8_t pattern, uint8_t intensity) {
 // AUDIO CONTROL (I2S Audio Playback)
 // ============================================================================
 
-// Play audio event based on type
+// TEST: Small embedded audio sample to verify flash reading works
+const int16_t test_audio_sample[] = {
+  0, 100, 200, 300, 400, 500, 600, 700, 800, 900,
+  1000, 2000, 3000, 4000, 5000, -1000, -2000, -3000
+};
+
+// TEST: Copy of REAL audio data from audio_prompts.h (sample [2000] area)
+const int16_t test_real_audio_data[] = {
+  6099, 6769, 6354, 5788, 4935, 3613, 1629, -587, -1916, -2478, -2390, -1747,
+  -603, 1095, 3238, 5385, 6834, 7421, 6720, 5613, 4002, 2212, 1119, 291
+};
+
+// Play audio event based on type (VOICE PROMPTS)
 void playAudioEvent(uint8_t audioEvent, uint8_t volume) {
   Serial.print("Audio event: 0x");
   Serial.print(audioEvent, HEX);
   Serial.print(" (");
 
-  // Log and play the audio event
+  // TEST: Read embedded test sample
+  Serial.print("\nTEST SAMPLE: ");
+  for (int i = 0; i < 10; i++) {
+    Serial.print(test_audio_sample[i]);
+    Serial.print(" ");
+  }
+  Serial.println();
+
+  // TEST: Read real audio data test array (should match audio_prompts.h)
+  Serial.print("TEST REAL AUDIO: ");
+  for (int i = 0; i < 12; i++) {
+    Serial.print(test_real_audio_data[i]);
+    Serial.print(" ");
+  }
+  Serial.println();
+
+  // Select audio buffer and size based on event
+  const int16_t* audioData = nullptr;
+  uint32_t audioSize = 0;
+
   switch (audioEvent) {
     case AUDIO_TRAINING_START:
       Serial.print("Training Start");
-      // Three ascending beeps
-      audioPlayer.playTone(800, 100, volume);
-      delay(50);
-      audioPlayer.playTone(1000, 100, volume);
-      delay(50);
-      audioPlayer.playTone(1200, 100, volume);
+      audioData = audio_prompt_training_start;
+      audioSize = audio_prompt_training_start_SIZE;
       break;
-
     case AUDIO_HALFWAY:
       Serial.print("Halfway");
-      // Single medium beep
-      audioPlayer.playTone(1000, 150, volume);
+      audioData = audio_prompt_halfway;
+      audioSize = audio_prompt_halfway_SIZE;
       break;
-
     case AUDIO_SET_COMPLETE:
       Serial.print("Set Complete");
-      // Two quick beeps
-      audioPlayer.playTone(1200, 100, volume);
-      delay(100);
-      audioPlayer.playTone(1200, 100, volume);
+      audioData = audio_prompt_set_complete;
+      audioSize = audio_prompt_set_complete_SIZE;
       break;
-
     case AUDIO_LAST_SET:
       Serial.print("Last Set");
-      // Long alert tone
-      audioPlayer.playTone(900, 400, volume);
+      audioData = audio_prompt_last_set;
+      audioSize = audio_prompt_last_set_SIZE;
       break;
-
     case AUDIO_ZONE_TRANSITION:
       Serial.print("Zone Transition");
-      // Sweep tone (low to high)
-      audioPlayer.playTone(800, 150, volume);
-      audioPlayer.playTone(1200, 150, volume);
+      audioData = audio_prompt_zone_transition;
+      audioSize = audio_prompt_zone_transition_SIZE;
       break;
-
     case AUDIO_SESSION_COMPLETE:
       Serial.print("Session Complete");
-      // Fanfare: ascending tones
-      audioPlayer.playTone(800, 120, volume);
-      delay(50);
-      audioPlayer.playTone(1000, 120, volume);
-      delay(50);
-      audioPlayer.playTone(1200, 120, volume);
-      delay(50);
-      audioPlayer.playTone(1400, 200, volume);
+      audioData = audio_prompt_session_complete;
+      audioSize = audio_prompt_session_complete_SIZE;
       break;
-
     case AUDIO_PAUSE:
       Serial.print("Pause");
-      // Descending beep
-      audioPlayer.playTone(1000, 100, volume);
-      delay(50);
-      audioPlayer.playTone(800, 100, volume);
+      audioData = audio_prompt_pause;
+      audioSize = audio_prompt_pause_SIZE;
       break;
-
     case AUDIO_RESUME:
       Serial.print("Resume");
-      // Ascending beep
-      audioPlayer.playTone(800, 100, volume);
-      delay(50);
-      audioPlayer.playTone(1000, 100, volume);
+      audioData = audio_prompt_resume;
+      audioSize = audio_prompt_resume_SIZE;
       break;
-
     default:
-      Serial.print("Unknown");
-      break;
+      Serial.println("Unknown)");
+      Serial.println("Invalid audio event ID");
+      return;
   }
 
   Serial.print(") at volume ");
   Serial.println(volume);
+
+  // Play voice prompt from flash memory
+  if (audioData != nullptr && audioSize > 0) {
+    // Debug: Print pointer address and first few samples
+    Serial.print("Audio data pointer: 0x");
+    Serial.println((uint32_t)audioData, HEX);
+    Serial.print("Audio size: ");
+    Serial.println(audioSize);
+
+    // Try reading samples directly from different offsets (nRF52 reads flash directly)
+    Serial.print("Direct read test - Sample [0]: ");
+    Serial.println(audioData[0]);
+    Serial.print("Direct read test - Sample [500]: ");
+    Serial.println(audioData[500]);
+    Serial.print("Direct read test - Sample [2000]: ");
+    Serial.println(audioData[2000]);
+    Serial.print("Direct read test - Sample [3600]: ");
+    Serial.println(audioData[3600]);
+
+    audioPlayer.playBuffer(audioData, audioSize, volume);
+  } else {
+    Serial.println("ERROR: No audio data for this event!");
+  }
 }
 
 // ============================================================================
@@ -1195,7 +1226,7 @@ void onAudioControlWrite(uint16_t conn_hdl, BLECharacteristic* chr, uint8_t* dat
   }
 
   uint8_t audioEvent = data[0];
-  uint8_t volume = (len > 1) ? data[1] : 80;  // Default volume 80%
+  uint8_t volume = (len > 1) ? data[1] : 100;  // Default volume 100% (full scale)
 
   Serial.print("Audio event: 0x");
   Serial.print(audioEvent, HEX);
@@ -1300,10 +1331,8 @@ void handleStrokeDetection() {
     lastDebugPrint = millis();
   }
 
-  // Handle calibration mode
+  // Handle calibration mode - track acceleration extremes during each stroke
   if (calibrationState.active) {
-    calibrationState.sampleCount++;
-
     if (strokeAccel > calibrationState.maxAccelSeen) {
       calibrationState.maxAccelSeen = strokeAccel;
     }
@@ -1311,22 +1340,22 @@ void handleStrokeDetection() {
       calibrationState.minAccelSeen = strokeAccel;
     }
 
-    // Show progress every 10 samples
-    if (calibrationState.sampleCount % 10 == 0) {
-      Serial.print("Calibration samples: ");
-      Serial.print(calibrationState.sampleCount);
-      Serial.print(" | Max: ");
+    // Debug: Print calibration data every 100ms
+    static unsigned long lastCalDebugPrint = 0;
+    if (millis() - lastCalDebugPrint > 100) {
+      Serial.print("CAL | Y=");
+      Serial.print(strokeAccel, 2);
+      Serial.print("g | Max=");
       Serial.print(calibrationState.maxAccelSeen, 2);
-      Serial.print("g | Min: ");
+      Serial.print("g | Min=");
       Serial.print(calibrationState.minAccelSeen, 2);
-      Serial.println("g");
+      Serial.print("g | Threshold=");
+      Serial.print(strokeDetection.threshold, 2);
+      Serial.print("g | Phase=");
+      Serial.println(strokeDetection.currentPhase);
+      lastCalDebugPrint = millis();
     }
-
-    // Auto-complete after enough samples
-    if (calibrationState.sampleCount >= CALIBRATION_SAMPLES) {
-      completeCalibration();
-    }
-    return;
+    // Don't return - continue with normal stroke detection below
   }
 
   // Stroke detection state machine
@@ -1360,7 +1389,8 @@ void handleStrokeDetection() {
       }
 
       // Transition to drive when acceleration starts decreasing (from peak ~1.8g to ~1.2g)
-      if (strokeAccel < strokeDetection.maxAccel * 0.65) {
+      // For hand movements, require more significant decrease to avoid false triggers
+      if (strokeAccel < strokeDetection.maxAccel * 0.5) {
         strokeDetection.currentPhase = STROKE_PHASE_DRIVE;
         sendStrokeEvent(STROKE_PHASE_DRIVE, currentTime, strokeAccel);
         Serial.println("DRIVE phase");
@@ -1368,14 +1398,36 @@ void handleStrokeDetection() {
       break;
 
     case STROKE_PHASE_DRIVE:
-      // Detect finish - when acceleration crosses near zero (based on paddle data: 0 to -0.5g range)
-      if (strokeAccel < 0.0) {
+      // Detect finish - when acceleration decreases significantly (relaxed for hand movements during development)
+      // For real strokes in water, change back to: if (strokeAccel < 0.0)
+      if (strokeAccel < strokeDetection.maxAccel * 0.2) {
         strokeDetection.currentPhase = STROKE_PHASE_FINISH;
         strokeDetection.minAccel = strokeAccel;
 
         // Count this as a completed stroke
         trainingState.currentStroke++;
         updateDeviceStatus();
+
+        // Handle calibration stroke counting
+        if (calibrationState.active) {
+          calibrationState.strokeCount++;
+
+          Serial.print("Calibration stroke ");
+          Serial.print(calibrationState.strokeCount);
+          Serial.print("/50 | Max: ");
+          Serial.print(calibrationState.maxAccelSeen, 2);
+          Serial.print("g | Min: ");
+          Serial.print(calibrationState.minAccelSeen, 2);
+          Serial.println("g");
+
+          // Send progress update to app
+          sendCalibrationStatus();
+
+          // Auto-complete after 50 strokes
+          if (calibrationState.strokeCount >= 50) {
+            completeCalibration();
+          }
+        }
 
         // Play zone-patterned haptic for the pacer device
         uint8_t pattern = PATTERN_STRONG_CLICK;
@@ -1490,9 +1542,15 @@ void startCalibration() {
   Serial.println("Perform 50 strokes at various intensities...");
 
   calibrationState.active = true;
-  calibrationState.sampleCount = 0;
+  calibrationState.strokeCount = 0;
   calibrationState.maxAccelSeen = -999.0;
   calibrationState.minAccelSeen = 999.0;
+
+  // Lower the threshold for development (hand movements) - change to 0.3g for real strokes in water
+  strokeDetection.threshold = 0.25;  // Moderate sensitivity for deliberate hand movements
+  Serial.print("Calibration threshold set to: ");
+  Serial.print(strokeDetection.threshold, 2);
+  Serial.println("g");
 
   trainingState.deviceState = STATE_CALIBRATING;
   updateDeviceStatus();
@@ -1506,6 +1564,13 @@ void startCalibration() {
 void stopCalibration() {
   Serial.println("Calibration stopped");
   calibrationState.active = false;
+
+  // Restore default threshold if calibration was cancelled
+  strokeDetection.threshold = STROKE_DETECT_THRESHOLD;
+  Serial.print("Threshold restored to default: ");
+  Serial.print(strokeDetection.threshold, 2);
+  Serial.println("g");
+
   trainingState.deviceState = STATE_READY;
   updateDeviceStatus();
 
@@ -1543,18 +1608,36 @@ void completeCalibration() {
 }
 
 void sendCalibrationStatus() {
-  if (!Bluefruit.connected()) return;
+  if (!Bluefruit.connected()) {
+    Serial.println("ERROR: Cannot send calibration status - not connected");
+    return;
+  }
 
-  // Format: [command=GET_STATUS][threshold(2)][status(1)]
-  uint8_t data[4];
+  // Format: [command(1) | strokeCount(1) | maxAccel(2) | minAccel(2) | reserved(2)]
+  uint8_t data[8];
   data[0] = CAL_CMD_GET_STATUS;
+  data[1] = calibrationState.strokeCount;
 
-  int16_t thresholdInt = (int16_t)(strokeDetection.threshold * 100.0);
-  data[1] = (thresholdInt >> 0) & 0xFF;
-  data[2] = (thresholdInt >> 8) & 0xFF;
-  data[3] = calibrationState.active ? 0x01 : 0x00;
+  // Convert max/min acceleration to int16 (multiply by 100)
+  int16_t maxAccelInt = (int16_t)(calibrationState.maxAccelSeen * 100.0);
+  int16_t minAccelInt = (int16_t)(calibrationState.minAccelSeen * 100.0);
 
-  calibrationChar.notify(data, 4);
+  data[2] = (maxAccelInt >> 0) & 0xFF;  // maxAccel low byte
+  data[3] = (maxAccelInt >> 8) & 0xFF;  // maxAccel high byte
+  data[4] = (minAccelInt >> 0) & 0xFF;  // minAccel low byte
+  data[5] = (minAccelInt >> 8) & 0xFF;  // minAccel high byte
+  data[6] = 0x00;  // reserved
+  data[7] = 0x00;  // reserved
+
+  Serial.print("Sending calibration notification: strokes=");
+  Serial.print(calibrationState.strokeCount);
+  Serial.print(", maxAccel=");
+  Serial.print(calibrationState.maxAccelSeen, 2);
+  Serial.print("g, minAccel=");
+  Serial.print(calibrationState.minAccelSeen, 2);
+  Serial.println("g");
+
+  calibrationChar.notify(data, 8);
 }
 
 // ============================================================================

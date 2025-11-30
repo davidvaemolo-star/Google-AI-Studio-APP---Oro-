@@ -14,8 +14,20 @@
 #define I2S_CONFIG_MCKFREQ_MCKFREQ_32MDIV32 0x70000000UL
 #endif
 
+#ifndef I2S_CONFIG_MCKFREQ_MCKFREQ_32MDIV21
+#define I2S_CONFIG_MCKFREQ_MCKFREQ_32MDIV21 0x54000000UL
+#endif
+
 #ifndef I2S_CONFIG_RATIO_RATIO_64X
 #define I2S_CONFIG_RATIO_RATIO_64X 2UL
+#endif
+
+#ifndef I2S_CONFIG_RATIO_RATIO_96X
+#define I2S_CONFIG_RATIO_RATIO_96X 3UL
+#endif
+
+#ifndef I2S_CONFIG_RATIO_RATIO_1024X
+#define I2S_CONFIG_RATIO_RATIO_1024X 10UL
 #endif
 
 #ifndef I2S_CONFIG_ALIGN_ALIGN_Right
@@ -33,6 +45,10 @@ bool AudioI2S::begin() {
     }
 
     Serial.println("Configuring I2S peripheral...");
+
+    // Initialize double buffering
+    currentBuffer = audioBuffer0;
+    currentBufferIndex = 0;
 
     // CRITICAL: Do NOT call pinMode() on I2S pins - this prevents the I2S peripheral
     // from taking control of the pins. The I2S peripheral will configure them automatically
@@ -92,24 +108,25 @@ void AudioI2S::configureI2S() {
 
     // Configure pins - Use DIRECT GPIO numbers (NO bit shifting)
     // nRF52 I2S PSEL registers expect raw GPIO pin numbers
-    NRF_I2S->PSEL.SCK   = I2S_SCK_PIN;      // GPIO 3 (D1)
-    NRF_I2S->PSEL.LRCK  = I2S_LRCK_PIN;     // GPIO 28 (D2)
-    NRF_I2S->PSEL.SDOUT = I2S_SDOUT_PIN;    // GPIO 2 (D0)
+    // XIAO nRF52840 Sense PLUS - Castellated I2S pins on back of board
+    NRF_I2S->PSEL.SCK   = I2S_SCK_PIN;      // GPIO 19 (P0.19 castellated) - BCLK
+    NRF_I2S->PSEL.LRCK  = I2S_LRCK_PIN;     // GPIO 33 (P1.01 castellated) - LRCLK
+    NRF_I2S->PSEL.SDOUT = I2S_SDOUT_PIN;    // GPIO 15 (P0.15 castellated) - DIN
     // SDIN stays disconnected (no microphone input)
 
-    // Configure I2S mode - Mono configuration for MAX98357A
+    // Configure I2S mode - STEREO mode (MAX98357A needs full I2S frames)
     NRF_I2S->CONFIG.MODE     = I2S_CONFIG_MODE_MODE_Master;
     NRF_I2S->CONFIG.SWIDTH   = I2S_CONFIG_SWIDTH_SWIDTH_16Bit;
-    NRF_I2S->CONFIG.ALIGN    = I2S_CONFIG_ALIGN_ALIGN_Left;
+    NRF_I2S->CONFIG.ALIGN    = I2S_CONFIG_ALIGN_ALIGN_Right;  // RIGHT alignment
     NRF_I2S->CONFIG.FORMAT   = I2S_CONFIG_FORMAT_FORMAT_I2S;
-    NRF_I2S->CONFIG.CHANNELS = I2S_CONFIG_CHANNELS_CHANNELS_Left;  // Mono - left channel only
+    NRF_I2S->CONFIG.CHANNELS = I2S_CONFIG_CHANNELS_CHANNELS_Stereo;  // STEREO - duplicate to both channels
     NRF_I2S->CONFIG.MCKEN    = I2S_CONFIG_MCKEN_MCKEN_Enabled;
     NRF_I2S->CONFIG.TXEN     = I2S_CONFIG_TXEN_TXEN_Enabled;
     NRF_I2S->CONFIG.RXEN     = I2S_CONFIG_RXEN_RXEN_Disabled;
 
-    // Configure master clock and ratio: 32MHz/32 = 1 MHz MCK, RATIO 64 => ~15.6 kHz LRCK
-    NRF_I2S->CONFIG.MCKFREQ = I2S_CONFIG_MCKFREQ_MCKFREQ_32MDIV32;
-    NRF_I2S->CONFIG.RATIO = I2S_CONFIG_RATIO_RATIO_64X;
+    // Configure master clock and ratio: 32MHz/21 = 1.524 MHz MCK, RATIO 96 => 15.875 kHz LRCK (closer to 16kHz!)
+    NRF_I2S->CONFIG.MCKFREQ = I2S_CONFIG_MCKFREQ_MCKFREQ_32MDIV21;
+    NRF_I2S->CONFIG.RATIO = I2S_CONFIG_RATIO_RATIO_96X;
 
     // Enable I2S
     NRF_I2S->ENABLE = 1;
@@ -117,7 +134,7 @@ void AudioI2S::configureI2S() {
     // Allow peripheral to stabilize before first use
     delay(10);
 
-    Serial.println("I2S configured with GPIO pin numbers (3, 28, 2) and Master mode");
+    Serial.println("I2S configured with GPIO pin numbers (19, 33, 15) - Castellated I2S pins");
     Serial.print("CONFIG.TXEN: ");
     Serial.println(NRF_I2S->CONFIG.TXEN);
     Serial.print("CONFIG.ALIGN: ");
@@ -154,9 +171,10 @@ void AudioI2S::generateTone(uint16_t frequency, uint16_t samples, uint8_t volume
             peakSample = sample;
         }
 
-        // Pack sample directly for mono left channel
-        // No bit shifting needed in mono mode
-        audioBuffer[i] = (uint16_t)sample;
+        // Pack sample for STEREO mode with RIGHT alignment
+        // Duplicate sample to both channels for compatibility
+        uint16_t sampleU16 = (uint16_t)sample;
+        currentBuffer[i] = ((uint32_t)sampleU16 << 16) | sampleU16;
 
         if (i < 4) {
             Serial.print("Sample index ");
@@ -165,7 +183,7 @@ void AudioI2S::generateTone(uint16_t frequency, uint16_t samples, uint8_t volume
             Serial.print((uint16_t)sample, HEX);
             Serial.print(" ("); Serial.print(sample); Serial.print(")");
             Serial.print(" packed=0x");
-            Serial.println(audioBuffer[i], HEX);
+            Serial.println(currentBuffer[i], HEX);
         }
     }
 
@@ -194,21 +212,35 @@ void AudioI2S::playTone(uint16_t frequency, uint16_t duration_ms, uint8_t volume
 
     playing = true;
 
-    // Play tone in chunks to avoid buffer overflow
-    while (totalSamples > 0) {
-        uint16_t chunkSize = min(totalSamples, (uint32_t)AUDIO_BUFFER_SIZE);
+    // Play tone in chunks with proper double buffering
+    // STEREO mode: each sample uses 1 buffer word (L+R packed), so max samples = AUDIO_BUFFER_SIZE
 
-        // Generate tone samples
+    // Prepare first chunk
+    uint16_t chunkSize = min(totalSamples, (uint32_t)AUDIO_BUFFER_SIZE);
+    generateTone(frequency, chunkSize, volume);
+    startTransfer(chunkSize, true);  // Start I2S
+    totalSamples -= chunkSize;
+
+    while (totalSamples > 0) {
+        // Wait for DMA to latch current buffer
+        waitForBufferLatch();
+
+        // Swap to other buffer and prepare next chunk WHILE current chunk is playing
+        swapBuffers();
+        chunkSize = min(totalSamples, (uint32_t)AUDIO_BUFFER_SIZE);
         generateTone(frequency, chunkSize, volume);
 
-        // Start I2S transfer
-        startTransfer(chunkSize);
-
-        // Wait for completion
-        waitForCompletion(chunkSize);
+        // Queue next buffer (will be latched when current buffer finishes)
+        startTransfer(chunkSize, false);
 
         totalSamples -= chunkSize;
     }
+
+    // Wait for last chunk to finish
+    waitForFinalChunk(chunkSize);
+
+    // Stop I2S after all chunks are done
+    stop();
 
     playing = false;
 }
@@ -222,71 +254,144 @@ void AudioI2S::playMelody(const uint16_t* frequencies, const uint16_t* durations
     }
 }
 
-void AudioI2S::startTransfer(uint16_t sampleCount) {
-    // Set buffer pointer
-    NRF_I2S->TXD.PTR = (uint32_t)audioBuffer;
+void AudioI2S::playBuffer(const int16_t* buffer, uint32_t sampleCount, uint8_t volume) {
+    if (!initialized) {
+        Serial.println("ERROR: I2S not initialized!");
+        return;
+    }
+
+    if (buffer == nullptr || sampleCount == 0) {
+        Serial.println("ERROR: Invalid buffer or sample count!");
+        return;
+    }
+
+    // Clamp volume to 0-100
+    volume = constrain(volume, 0, 100);
+
+    // Calculate volume scaling factor (0.0 to 1.0)
+    float volumeScale = volume / 100.0f;
+
+    Serial.print("Playing buffer: ");
+    Serial.print(sampleCount);
+    Serial.print(" samples (");
+    Serial.print((sampleCount * 1000.0f) / SAMPLE_RATE, 1);
+    Serial.print(" ms) at volume ");
+    Serial.println(volume);
+
+    playing = true;
+
+    uint32_t samplesRemaining = sampleCount;
+    uint32_t bufferOffset = 0;
+
+    // Helper lambda to load chunk into current buffer
+    auto loadChunk = [&](uint16_t chunkSize) {
+        for (uint16_t i = 0; i < chunkSize; i++) {
+            int16_t sample = buffer[bufferOffset + i];
+            int16_t scaledSample = (int16_t)(sample * volumeScale);
+            uint16_t sampleU16 = (uint16_t)scaledSample;
+            currentBuffer[i] = ((uint32_t)sampleU16 << 16) | sampleU16;  // Both channels
+        }
+        bufferOffset += chunkSize;
+    };
+
+    // Prepare and start first chunk
+    uint16_t chunkSize = min(samplesRemaining, (uint32_t)AUDIO_BUFFER_SIZE);
+    loadChunk(chunkSize);
+    startTransfer(chunkSize, true);  // Start I2S
+    samplesRemaining -= chunkSize;
+
+    while (samplesRemaining > 0) {
+        // Wait for DMA to latch current buffer
+        waitForBufferLatch();
+
+        // Swap to other buffer and prepare next chunk WHILE current chunk is playing
+        swapBuffers();
+        chunkSize = min(samplesRemaining, (uint32_t)AUDIO_BUFFER_SIZE);
+        loadChunk(chunkSize);
+
+        // Queue next buffer (will be latched when current buffer finishes)
+        startTransfer(chunkSize, false);
+
+        samplesRemaining -= chunkSize;
+    }
+
+    // Wait for last chunk to finish
+    waitForFinalChunk(chunkSize);
+
+    // Stop I2S after all chunks are done
+    stop();
+
+    playing = false;
+    Serial.println("Buffer playback complete");
+}
+
+void AudioI2S::startTransfer(uint16_t sampleCount, bool isFirstChunk) {
+    // Set buffer pointer to current buffer
+    NRF_I2S->TXD.PTR = (uint32_t)currentBuffer;
 
     // Set transmit/receive shared length register (counts 32-bit words)
+    // STEREO mode: 1 word per sample (L+R packed in 32 bits)
     NRF_I2S->RXTXD.MAXCNT = sampleCount;
 
-    // Debug: Uncomment to see I2S transfer details
-    Serial.print("Starting I2S transfer: ");
+    Serial.print(isFirstChunk ? "Starting" : "Updating");
+    Serial.print(" I2S: ");
     Serial.print(sampleCount);
-    Serial.print(" samples, buffer @ 0x");
-    Serial.println((uint32_t)audioBuffer, HEX);
+    Serial.print(" samples, buffer ");
+    Serial.print(currentBufferIndex);
+    Serial.print(" @ 0x");
+    Serial.println((uint32_t)currentBuffer, HEX);
 
     // Clear events
     NRF_I2S->EVENTS_TXPTRUPD = 0;
-    NRF_I2S->EVENTS_STOPPED = 0;
 
-    // Start I2S transfer
-    NRF_I2S->TASKS_START = 1;
-}
-
-void AudioI2S::waitForCompletion(uint16_t sampleCount) {
-    // Estimate duration of this chunk and block until it should be finished
-    uint32_t expectedDurationMs = (static_cast<uint32_t>(sampleCount) * 1000UL) / SAMPLE_RATE;
-    if (expectedDurationMs == 0) {
-        expectedDurationMs = 1;  // ensure we wait at least a millisecond
+    // Only START I2S on first chunk - subsequent chunks just update the buffer pointer
+    if (isFirstChunk) {
+        NRF_I2S->EVENTS_STOPPED = 0;
+        NRF_I2S->TASKS_START = 1;
+        Serial.println("I2S peripheral started");
     }
 
-    // Allow DMA to fetch buffer pointer
+    // Buffer swapping is now done AFTER waitForCompletion() in the playback loop
+}
+
+void AudioI2S::swapBuffers() {
+    currentBufferIndex = 1 - currentBufferIndex;
+    currentBuffer = (currentBufferIndex == 0) ? audioBuffer0 : audioBuffer1;
+    Serial.print("Swapped to buffer ");
+    Serial.println(currentBufferIndex);
+}
+
+void AudioI2S::waitForBufferLatch() {
+    // Wait for DMA to latch the buffer pointer
     uint32_t timeout = millis() + 50;
     while (NRF_I2S->EVENTS_TXPTRUPD == 0) {
         if (millis() > timeout) {
             Serial.println("ERROR: I2S TXPTRUPD timeout!");
-            // Verify I2S is still enabled
-            Serial.print("I2S ENABLE: ");
-            Serial.println(NRF_I2S->ENABLE);
             return;
         }
         yield();
     }
     NRF_I2S->EVENTS_TXPTRUPD = 0;
 
-    delay(expectedDurationMs + 1);
+    // Small delay to ensure DMA has fully switched to the new buffer
+    // before we start modifying the old buffer (500μs = ~8 samples at 16kHz)
+    delayMicroseconds(500);
 
-    Serial.print("Chunk playback ms: ");
-    Serial.println(expectedDurationMs);
+    Serial.println("Buffer latched by DMA");
+}
 
-    // Stop I2S and wait for STOPPED event
-    NRF_I2S->TASKS_STOP = 1;
-
-    timeout = millis() + 100;
-    while (NRF_I2S->EVENTS_STOPPED == 0) {
-        if (millis() > timeout) {
-            Serial.println("ERROR: I2S STOPPED timeout!");
-            // Verify I2S is still enabled
-            Serial.print("I2S ENABLE: ");
-            Serial.println(NRF_I2S->ENABLE);
-            return;
-        }
-        yield();
+void AudioI2S::waitForFinalChunk(uint16_t sampleCount) {
+    // Wait for the final chunk to finish playing
+    uint32_t expectedDurationMs = (static_cast<uint32_t>(sampleCount) * 1000UL) / SAMPLE_RATE;
+    if (expectedDurationMs == 0) {
+        expectedDurationMs = 1;
     }
 
-    NRF_I2S->EVENTS_STOPPED = 0;
+    Serial.print("Waiting for final chunk to complete: ");
+    Serial.print(expectedDurationMs);
+    Serial.println(" ms");
 
-    Serial.println("I2S chunk complete");
+    delay(expectedDurationMs + 5);  // Add small margin
 }
 
 void AudioI2S::stop() {
