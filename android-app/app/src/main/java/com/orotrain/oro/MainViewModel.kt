@@ -49,7 +49,9 @@ class MainViewModel(
                                 isCalibrating = existing?.isCalibrating ?: device.isCalibrating,
                                 strokeThreshold = existing?.strokeThreshold ?: device.strokeThreshold,
                                 strokeCount = existing?.strokeCount ?: device.strokeCount,
-                                lastStrokePhase = existing?.lastStrokePhase ?: device.lastStrokePhase
+                                lastStrokePhase = existing?.lastStrokePhase ?: device.lastStrokePhase,
+                                fsrForcePercent = existing?.fsrForcePercent ?: device.fsrForcePercent,
+                                fsrThresholdTriggered = existing?.fsrThresholdTriggered ?: device.fsrThresholdTriggered
                             )
                         }
                         state.copy(devices = renumberSeats(mergedDevices))
@@ -67,6 +69,20 @@ class MainViewModel(
                 it.strokeEvents.collect { strokeEvent ->
                     strokeEvent?.let { event ->
                         handleStrokeEvent(event)
+                    }
+                }
+            }
+            viewModelScope.launch {
+                it.calibrationUpdates.collect { calibrationUpdate ->
+                    calibrationUpdate?.let { update ->
+                        handleCalibrationUpdate(update)
+                    }
+                }
+            }
+            viewModelScope.launch {
+                it.fsrUpdates.collect { fsrUpdate ->
+                    fsrUpdate?.let { update ->
+                        handleFsrUpdate(update)
                     }
                 }
             }
@@ -131,6 +147,52 @@ class MainViewModel(
             Log.d(TAG, "Triggering haptics for all devices (including pacer)")
             triggerFollowerHaptics(state.currentZone)
         }
+    }
+
+    private fun handleCalibrationUpdate(update: BleManager.CalibrationUpdate) {
+        _uiState.update { state ->
+            val updatedDevices = state.devices.map { device ->
+                if (device.id == update.deviceId) {
+                    device.copy(
+                        calibrationProgress = update.strokeCount,
+                        calibrationMaxAccel = update.maxAccel,
+                        calibrationMinAccel = update.minAccel,
+                        strokeThreshold = update.suggestedThreshold,
+                        isCalibrationComplete = update.isComplete
+                    )
+                } else {
+                    device
+                }
+            }
+            state.copy(devices = updatedDevices)
+        }
+
+        Log.d(TAG, "Calibration update applied for ${update.deviceId}: " +
+                "${update.strokeCount}/50 strokes, threshold=${update.suggestedThreshold}g")
+    }
+
+    private fun handleFsrUpdate(update: BleManager.FsrUpdate) {
+        _uiState.update { state ->
+            val updatedDevices = state.devices.map { device ->
+                if (device.id == update.deviceId) {
+                    device.copy(
+                        fsrForcePercent = update.forcePercent,
+                        fsrThresholdTriggered = update.thresholdTriggered
+                    )
+                } else {
+                    device
+                }
+            }
+            state.copy(devices = updatedDevices)
+        }
+    }
+
+    fun setLedColor(deviceId: String, r: Int, g: Int, b: Int) {
+        bleManager?.sendLedColor(deviceId, r, g, b)
+    }
+
+    fun setLedAutoMode(deviceId: String) {
+        bleManager?.sendLedAutoMode(deviceId)
     }
 
     private fun processStrokeForTraining(

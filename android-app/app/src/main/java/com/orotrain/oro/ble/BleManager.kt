@@ -55,6 +55,8 @@ class BleManager(private val context: Context) {
         val STROKE_EVENT_UUID = UUID.fromString("12340005-1234-5678-1234-56789abcdef0")
         val CALIBRATION_UUID = UUID.fromString("12340006-1234-5678-1234-56789abcdef0")
         val AUDIO_CONTROL_UUID = UUID.fromString("12340007-1234-5678-1234-56789abcdef0")
+        val FSR_DATA_UUID = UUID.fromString("12340008-1234-5678-1234-56789abcdef0")
+        val LED_CONTROL_UUID = UUID.fromString("12340009-1234-5678-1234-56789abcdef0")
 
         // Standard BLE Battery Service UUIDs
         val BATTERY_SERVICE_UUID = UUID.fromString("0000180F-0000-1000-8000-00805f9b34fb")
@@ -119,6 +121,12 @@ class BleManager(private val context: Context) {
         const val CAL_CMD_STOP: Byte = 0x02
         const val CAL_CMD_SET_THRESHOLD: Byte = 0x03
         const val CAL_CMD_GET_STATUS: Byte = 0x04
+
+        // LED Commands
+        const val LED_CMD_SET_COLOR: Byte = 0x01
+        const val LED_CMD_SET_PATTERN: Byte = 0x02
+        const val LED_CMD_SET_BRIGHTNESS: Byte = 0x03
+        const val LED_CMD_AUTO_MODE: Byte = 0x04
     }
 
     private val bluetoothManager: BluetoothManager =
@@ -148,8 +156,24 @@ class BleManager(private val context: Context) {
         val succeeded: Int
     )
 
+    data class CalibrationUpdate(
+        val deviceId: String,
+        val strokeCount: Int,
+        val maxAccel: Float,
+        val minAccel: Float,
+        val suggestedThreshold: Float,
+        val isComplete: Boolean
+    )
+
     private val _strokeEvents = MutableStateFlow<StrokeEvent?>(null)
     val strokeEvents: StateFlow<StrokeEvent?> = _strokeEvents.asStateFlow()
+
+    private val _calibrationUpdates = MutableStateFlow<CalibrationUpdate?>(null)
+    val calibrationUpdates: StateFlow<CalibrationUpdate?> = _calibrationUpdates.asStateFlow()
+
+    data class FsrUpdate(val deviceId: String, val forcePercent: Int, val rawAdc: Int, val thresholdTriggered: Boolean)
+    private val _fsrUpdates = MutableStateFlow<FsrUpdate?>(null)
+    val fsrUpdates: StateFlow<FsrUpdate?> = _fsrUpdates.asStateFlow()
 
     private val deviceGattMap = ConcurrentHashMap<String, BluetoothGatt>()
     private val deviceStatusMap = ConcurrentHashMap<String, DeviceStatus>()
@@ -532,6 +556,36 @@ class BleManager(private val context: Context) {
                     }
                 }
 
+                // Enable calibration notifications for all devices
+                val calibrationChar = hapticService.getCharacteristic(CALIBRATION_UUID)
+                if (calibrationChar != null) {
+                    gatt.setCharacteristicNotification(calibrationChar, true)
+                    val descriptor = calibrationChar.getDescriptor(CLIENT_CHARACTERISTIC_CONFIG_UUID)
+                    writeDescriptorCompat(gatt, descriptor, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)
+                    Log.d(TAG, "  ✓ Calibration notifications enabled for $deviceId")
+                } else {
+                    Log.w(TAG, "  ✗ Calibration characteristic NOT FOUND for $deviceId")
+                }
+
+                // Enable FSR data notifications for all devices
+                val fsrDataChar = hapticService.getCharacteristic(FSR_DATA_UUID)
+                if (fsrDataChar != null) {
+                    gatt.setCharacteristicNotification(fsrDataChar, true)
+                    val descriptor = fsrDataChar.getDescriptor(CLIENT_CHARACTERISTIC_CONFIG_UUID)
+                    writeDescriptorCompat(gatt, descriptor, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)
+                    Log.d(TAG, "  ✓ FSR data notifications enabled for $deviceId")
+                } else {
+                    Log.w(TAG, "  ✗ FSR Data characteristic NOT FOUND for $deviceId")
+                }
+
+                // Verify LED Control characteristic is available
+                val ledControlChar = hapticService.getCharacteristic(LED_CONTROL_UUID)
+                if (ledControlChar != null) {
+                    Log.d(TAG, "  ✓ LED Control characteristic FOUND for $deviceId")
+                } else {
+                    Log.w(TAG, "  ✗ LED Control characteristic NOT FOUND for $deviceId")
+                }
+
                 // Read battery level
                 val batteryService = gatt.getService(BATTERY_SERVICE_UUID)
                 val batteryChar = batteryService?.getCharacteristic(BATTERY_LEVEL_CHAR_UUID)
@@ -666,6 +720,60 @@ class BleManager(private val context: Context) {
                     DeviceStatus.Connected,
                     batteryLevel
                 )
+            }
+            FSR_DATA_UUID -> {
+                if (value.size >= 4) {
+                    val forcePercent = value[0].toInt() and 0xFF
+                    val rawAdc = ((value[2].toInt() and 0xFF) shl 8) or (value[1].toInt() and 0xFF)
+                    val thresholdTriggered = value[3].toInt() != 0
+
+                    _fsrUpdates.value = FsrUpdate(
+                        deviceId = gatt.device.address,
+                        forcePercent = forcePercent,
+                        rawAdc = rawAdc,
+                        thresholdTriggered = thresholdTriggered
+                    )
+
+                    Log.d(TAG, "FSR data from ${gatt.device.address}: force=$forcePercent%, rawAdc=$rawAdc, threshold=$thresholdTriggered")
+                }
+            }
+            CALIBRATION_UUID -> {
+                Log.d(TAG, "Calibration notification received from ${gatt.device.address}, size=${value.size}")
+
+                // Parse calibration status frame
+                // Format: [command(1) | strokeCount(1) | maxAccel(2) | minAccel(2) | reserved(2)]
+                if (value.size >= 4) {
+                    val command = value[0]
+                    val strokeCount = value[1].toInt() and 0xFF
+
+                    Log.d(TAG, "Calibration command=0x${String.format("%02X", command)}, strokeCount=$strokeCount, size=${value.size}")
+
+                    // Check if this is a calibration status update (CAL_CMD_GET_STATUS = 0x04)
+                    if (command == CAL_CMD_GET_STATUS && value.size >= 8) {
+                        val maxAccelInt = ((value[3].toInt() and 0xFF) shl 8) or (value[2].toInt() and 0xFF)
+                        val minAccelInt = ((value[5].toInt() and 0xFF) shl 8) or (value[4].toInt() and 0xFF)
+
+                        val maxAccel = maxAccelInt.toShort() / 100.0f
+                        val minAccel = minAccelInt.toShort() / 100.0f
+                        val suggestedThreshold = maxAccel * 0.55f  // 55% of max
+                        val isComplete = strokeCount >= 50
+
+                        val calibrationUpdate = CalibrationUpdate(
+                            deviceId = gatt.device.address,
+                            strokeCount = strokeCount,
+                            maxAccel = maxAccel,
+                            minAccel = minAccel,
+                            suggestedThreshold = suggestedThreshold,
+                            isComplete = isComplete
+                        )
+
+                        _calibrationUpdates.value = calibrationUpdate
+
+                        Log.d(TAG, "Calibration update from ${gatt.device.address}: " +
+                                "strokes=$strokeCount/50, maxAccel=$maxAccel, minAccel=$minAccel, " +
+                                "threshold=$suggestedThreshold, complete=$isComplete")
+                    }
+                }
             }
         }
     }
@@ -1102,6 +1210,59 @@ class BleManager(private val context: Context) {
             Log.d(TAG, "Audio command sent successfully to $deviceId: event=0x${String.format("%02X", audioEvent)}, volume=$clampedVolume")
         } else {
             Log.w(TAG, "Audio command write failed for $deviceId")
+        }
+
+        return result
+    }
+
+    // LED control functions
+
+    @SuppressLint("MissingPermission")
+    fun sendLedColor(deviceId: String, r: Int, g: Int, b: Int): Boolean {
+        return sendLedCommand(deviceId, LED_CMD_SET_COLOR, r.toByte(), g.toByte(), b.toByte(), 0)
+    }
+
+    @SuppressLint("MissingPermission")
+    fun sendLedPattern(deviceId: String, pattern: Int): Boolean {
+        return sendLedCommand(deviceId, LED_CMD_SET_PATTERN, 0, 0, 0, pattern.toByte())
+    }
+
+    @SuppressLint("MissingPermission")
+    fun sendLedBrightness(deviceId: String, brightness: Int): Boolean {
+        return sendLedCommand(deviceId, LED_CMD_SET_BRIGHTNESS, 0, 0, 0, brightness.toByte())
+    }
+
+    @SuppressLint("MissingPermission")
+    fun sendLedAutoMode(deviceId: String): Boolean {
+        return sendLedCommand(deviceId, LED_CMD_AUTO_MODE, 0, 0, 0, 0)
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun sendLedCommand(deviceId: String, command: Byte, r: Byte, g: Byte, b: Byte, param: Byte): Boolean {
+        if (!hasRequiredPermissions()) return false
+
+        val gatt = deviceGattMap[deviceId] ?: run {
+            Log.w(TAG, "sendLedCommand failed for $deviceId: GATT connection not found")
+            return false
+        }
+
+        val hapticService = gatt.getService(ORO_HAPTIC_SERVICE_UUID) ?: run {
+            Log.w(TAG, "sendLedCommand failed for $deviceId: Oro Haptic Service not found")
+            return false
+        }
+
+        val ledChar = hapticService.getCharacteristic(LED_CONTROL_UUID) ?: run {
+            Log.w(TAG, "sendLedCommand failed for $deviceId: LED Control characteristic not found")
+            return false
+        }
+
+        val data = byteArrayOf(command, r, g, b, param)
+        val result = writeCharacteristicCompat(gatt, ledChar, data, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT)
+
+        if (result) {
+            Log.d(TAG, "LED command sent to $deviceId: cmd=$command, r=$r, g=$g, b=$b, param=$param")
+        } else {
+            Log.w(TAG, "LED command write failed for $deviceId")
         }
 
         return result

@@ -52,7 +52,9 @@ fun OroApp(
                     onConnectAll = viewModel::connectAllDevices,
                     onStartCalibration = viewModel::startCalibration,
                     onStopCalibration = viewModel::stopCalibration,
-                    onTestAudio = { viewModel.testAudioBroadcast() }
+                    onSetThreshold = viewModel::setStrokeThreshold,
+                    onSetLedColor = viewModel::setLedColor,
+                    onSetLedAutoMode = viewModel::setLedAutoMode
                 )
 
                 AppDestination.Training -> TrainingScreen(

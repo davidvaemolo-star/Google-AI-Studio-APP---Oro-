@@ -25,14 +25,19 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.orotrain.oro.model.DeviceStatus
 import com.orotrain.oro.model.OroUiState
+import com.orotrain.oro.ui.components.CalibrationDialog
 import com.orotrain.oro.ui.components.DeviceCard
+import com.orotrain.oro.ui.components.LedControlDialog
 import com.orotrain.oro.ui.theme.AccentCyan
 import org.burnoutcrew.reorderable.ReorderableItem
 import org.burnoutcrew.reorderable.rememberReorderableLazyListState
@@ -50,7 +55,10 @@ fun ConnectionScreen(
     onConnectAll: () -> Unit = {},
     modifier: Modifier = Modifier,
     onStartCalibration: ((String) -> Unit)? = null,
-    onStopCalibration: ((String) -> Unit)? = null
+    onStopCalibration: ((String) -> Unit)? = null,
+    onSetThreshold: ((String, Float) -> Unit)? = null,
+    onSetLedColor: ((String, Int, Int, Int) -> Unit)? = null,
+    onSetLedAutoMode: ((String) -> Unit)? = null
 ) {
     val connectedDevices = remember(state.devices) {
         state.devices.filter { it.status == DeviceStatus.Connected }
@@ -66,6 +74,18 @@ fun ConnectionScreen(
     })
 
     val scrollState = rememberScrollState()
+
+    // Calibration dialog state
+    var calibratingDeviceId by remember { mutableStateOf<String?>(null) }
+    val calibratingDevice = calibratingDeviceId?.let { deviceId ->
+        state.devices.find { it.id == deviceId }
+    }
+
+    // LED control dialog state
+    var ledControlDeviceId by remember { mutableStateOf<String?>(null) }
+    val ledControlDevice = ledControlDeviceId?.let { deviceId ->
+        state.devices.find { it.id == deviceId }
+    }
 
     Column(
         modifier = modifier
@@ -190,8 +210,14 @@ fun ConnectionScreen(
                                 seatNumber = index + 1,
                                 seatRole = seatRole,
                                 isDragging = if (isSeatOrderLocked) false else isDragging,
-                                onStartCalibration = onStartCalibration,
+                                onStartCalibration = { deviceId ->
+                                    calibratingDeviceId = deviceId
+                                    onStartCalibration?.invoke(deviceId)
+                                },
                                 onStopCalibration = onStopCalibration,
+                                onShowLedControl = if (onSetLedColor != null) { deviceId ->
+                                    ledControlDeviceId = deviceId
+                                } else null,
                                 modifier = itemModifier
                             )
                         }
@@ -220,5 +246,39 @@ fun ConnectionScreen(
                 }
             }
         }
+    }
+
+    // Show calibration dialog when a device is being calibrated
+    if (calibratingDevice != null) {
+        CalibrationDialog(
+            device = calibratingDevice,
+            onDismiss = { calibratingDeviceId = null },
+            onStartCalibration = {
+                onStartCalibration?.invoke(calibratingDevice.id)
+            },
+            onStopCalibration = {
+                onStopCalibration?.invoke(calibratingDevice.id)
+                calibratingDeviceId = null
+            },
+            onSetThreshold = { threshold ->
+                onSetThreshold?.invoke(calibratingDevice.id, threshold)
+            },
+            previewMode = false  // Enable preview mode to demo all states
+        )
+    }
+
+    // Show LED control dialog
+    if (ledControlDevice != null) {
+        LedControlDialog(
+            deviceName = ledControlDevice.name,
+            onDismiss = { ledControlDeviceId = null },
+            onSetColor = { r, g, b ->
+                onSetLedColor?.invoke(ledControlDevice.id, r, g, b)
+            },
+            onSetAutoMode = {
+                onSetLedAutoMode?.invoke(ledControlDevice.id)
+                ledControlDeviceId = null
+            }
+        )
     }
 }

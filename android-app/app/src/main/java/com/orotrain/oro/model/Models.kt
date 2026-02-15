@@ -55,7 +55,13 @@ data class HapticDevice(
     val isCalibrating: Boolean = false,
     val strokeThreshold: Float? = null,
     val strokeCount: Int = 0,
-    val lastStrokePhase: Byte? = null
+    val lastStrokePhase: Byte? = null,
+    val calibrationProgress: Int = 0,  // 0-50 strokes
+    val calibrationMaxAccel: Float = 0f,
+    val calibrationMinAccel: Float = 0f,
+    val isCalibrationComplete: Boolean = false,
+    val fsrForcePercent: Int = 0,
+    val fsrThresholdTriggered: Boolean = false
 )
 
 enum class AppDestination {
