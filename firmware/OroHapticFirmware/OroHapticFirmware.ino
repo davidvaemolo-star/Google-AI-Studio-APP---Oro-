@@ -49,6 +49,15 @@
 #define FSR_THRESHOLD_PERCENT 70      // Default threshold for "too much grip" (0-100%)
 #define FSR_SMOOTHING_FACTOR 0.3f     // EMA smoothing (lower = smoother, higher = more responsive)
 
+// RGB LED Configuration (XIAO nRF52840 Sense built-in LED)
+// Active LOW: write LOW to turn ON, HIGH to turn OFF
+// Falls back to explicit pin numbers if board macros aren't defined
+#ifndef LEDR
+  #define LEDR  11   // Red LED   (PIN_LED1, P0.26)
+  #define LEDG  13   // Green LED (PIN_LED3, P0.30)
+  #define LEDB  12   // Blue LED  (PIN_LED2, P0.06)
+#endif
+
 // DRV2605L Configuration
 Adafruit_DRV2605 drv;
 
@@ -285,6 +294,23 @@ uint8_t lastBatteryLevel = 100;
 String deviceName = "Oro-0000";
 
 // ============================================================================
+// LED HELPERS
+// ============================================================================
+
+// Set RGB LED color (0-255 per channel). Inverted because LEDs are active-LOW.
+void setLedColor(uint8_t r, uint8_t g, uint8_t b) {
+  analogWrite(LEDR, 255 - r);
+  analogWrite(LEDG, 255 - g);
+  analogWrite(LEDB, 255 - b);
+}
+
+void ledOff() {
+  digitalWrite(LEDR, HIGH);
+  digitalWrite(LEDG, HIGH);
+  digitalWrite(LEDB, HIGH);
+}
+
+// ============================================================================
 // SETUP FUNCTIONS
 // ============================================================================
 
@@ -338,6 +364,19 @@ void setup() {
   // Initialize FSR
   pinMode(FSR_PIN, INPUT);
   Serial.println("FSR initialized on pin A3");
+
+  // Initialize RGB LED
+  pinMode(LEDR, OUTPUT);
+  pinMode(LEDG, OUTPUT);
+  pinMode(LEDB, OUTPUT);
+  ledOff();
+  // Startup blink: Red → Green → Blue confirms each LED channel is wired
+  setLedColor(255, 0, 0); delay(200); ledOff(); delay(100);
+  setLedColor(0, 255, 0); delay(200); ledOff(); delay(100);
+  setLedColor(0, 0, 255); delay(200); ledOff(); delay(100);
+  // Dim blue = advertising / waiting for connection
+  setLedColor(0, 0, 30);
+  Serial.println("RGB LED initialized");
 
   // Initialize battery monitoring
   pinMode(BATTERY_PIN, INPUT);
@@ -1173,6 +1212,9 @@ void onBLEConnected(uint16_t conn_handle) {
   Serial.println("BLE device connected: " + String(addr_str));
   updateConnectionStatus();
 
+  // LED: dim green = connected
+  setLedColor(0, 50, 0);
+
   // Play connection haptic
   playHapticEffect(PATTERN_SOFT_CLICK, 60);
 }
@@ -1187,6 +1229,9 @@ void onBLEDisconnected(uint16_t conn_handle, uint8_t reason) {
   }
 
   updateConnectionStatus();
+
+  // LED: back to dim blue = advertising / waiting
+  setLedColor(0, 0, 30);
 
   // Play disconnection haptic
   playHapticEffect(PATTERN_SOFT_CLICK, 40);
@@ -1390,20 +1435,32 @@ void onLedControlWrite(uint16_t conn_hdl, BLECharacteristic* chr, uint8_t* data,
   uint8_t r = data[1];
   uint8_t g = data[2];
   uint8_t b = data[3];
-  uint8_t param = (len >= 5) ? data[4] : 0;
 
-  Serial.print("LED control: cmd=0x");
+  switch (command) {
+    case 0x00:  // LED off
+      ledOff();
+      break;
+
+    case 0x01:  // Set solid color (used by CoachingEngine for FSR grip feedback)
+      // Green (0,255,0)  = good grip  (0-40% force)
+      // Yellow (255,255,0) = watch grip (40-70% force)
+      // Red (255,0,0)    = over-gripping (70-100% force)
+      setLedColor(r, g, b);
+      break;
+
+    case 0x02:  // Restore BLE status color (e.g. after training ends)
+      setLedColor(0, 50, 0);  // Dim green = still connected
+      break;
+
+    default:
+      break;
+  }
+
+  Serial.print("LED: cmd=0x");
   Serial.print(command, HEX);
-  Serial.print(" R=");
-  Serial.print(r);
-  Serial.print(" G=");
-  Serial.print(g);
-  Serial.print(" B=");
-  Serial.print(b);
-  Serial.print(" param=");
-  Serial.println(param);
-
-  // TODO: Drive actual LED hardware (NeoPixel, etc.) when connected
+  Serial.print(" R="); Serial.print(r);
+  Serial.print(" G="); Serial.print(g);
+  Serial.print(" B="); Serial.println(b);
 }
 
 // ============================================================================
