@@ -24,7 +24,6 @@
 #include <math.h>
 #include "LSM6DS3.h"  // Use Seeed_Arduino_LSM6DS3 library
 #include "audio_i2s.h"  // I2S audio playback for MAX98357A
-#include "audio_prompts.h"  // Voice prompt audio data
 
 // ============================================================================
 // HARDWARE CONFIGURATION
@@ -1082,103 +1081,76 @@ const int16_t test_real_audio_data[] = {
   -603, 1095, 3238, 5385, 6834, 7421, 6720, 5613, 4002, 2212, 1119, 291
 };
 
-// Play audio event based on type (VOICE PROMPTS)
+// Play audio event based on type (TONE-BASED PROMPTS)
+// Each event has a distinct tone pattern to distinguish training cues
 void playAudioEvent(uint8_t audioEvent, uint8_t volume) {
   Serial.print("Audio event: 0x");
   Serial.print(audioEvent, HEX);
   Serial.print(" (");
 
-  // TEST: Read embedded test sample
-  Serial.print("\nTEST SAMPLE: ");
-  for (int i = 0; i < 10; i++) {
-    Serial.print(test_audio_sample[i]);
-    Serial.print(" ");
-  }
-  Serial.println();
-
-  // TEST: Read real audio data test array (should match audio_prompts.h)
-  Serial.print("TEST REAL AUDIO: ");
-  for (int i = 0; i < 12; i++) {
-    Serial.print(test_real_audio_data[i]);
-    Serial.print(" ");
-  }
-  Serial.println();
-
-  // Select audio buffer and size based on event
-  const int16_t* audioData = nullptr;
-  uint32_t audioSize = 0;
-
   switch (audioEvent) {
     case AUDIO_TRAINING_START:
-      Serial.print("Training Start");
-      audioData = audio_prompt_training_start;
-      audioSize = audio_prompt_training_start_SIZE;
+      // Single high tone — session starting
+      Serial.println("Training Start)");
+      audioPlayer.playTone(880, 300, volume);
       break;
+
     case AUDIO_HALFWAY:
-      Serial.print("Halfway");
-      audioData = audio_prompt_halfway;
-      audioSize = audio_prompt_halfway_SIZE;
+      // Two ascending tones — halfway there
+      Serial.println("Halfway)");
+      audioPlayer.playTone(660, 150, volume);
+      audioPlayer.playTone(880, 150, volume);
       break;
+
     case AUDIO_SET_COMPLETE:
-      Serial.print("Set Complete");
-      audioData = audio_prompt_set_complete;
-      audioSize = audio_prompt_set_complete_SIZE;
+      // Two ascending tones — set done
+      Serial.println("Set Complete)");
+      audioPlayer.playTone(523, 150, volume);
+      audioPlayer.playTone(659, 150, volume);
       break;
+
     case AUDIO_LAST_SET:
-      Serial.print("Last Set");
-      audioData = audio_prompt_last_set;
-      audioSize = audio_prompt_last_set_SIZE;
+      // Triple beep — last set alert
+      Serial.println("Last Set)");
+      audioPlayer.playTone(880, 100, volume);
+      audioPlayer.playTone(880, 100, volume);
+      audioPlayer.playTone(880, 100, volume);
       break;
+
     case AUDIO_ZONE_TRANSITION:
-      Serial.print("Zone Transition");
-      audioData = audio_prompt_zone_transition;
-      audioSize = audio_prompt_zone_transition_SIZE;
+      // Three ascending tones — moving to next zone
+      Serial.println("Zone Transition)");
+      audioPlayer.playTone(523, 120, volume);
+      audioPlayer.playTone(659, 120, volume);
+      audioPlayer.playTone(784, 120, volume);
       break;
+
     case AUDIO_SESSION_COMPLETE:
-      Serial.print("Session Complete");
-      audioData = audio_prompt_session_complete;
-      audioSize = audio_prompt_session_complete_SIZE;
+      // Four-note ascending fanfare — session done
+      Serial.println("Session Complete)");
+      audioPlayer.playTone(523, 150, volume);
+      audioPlayer.playTone(659, 150, volume);
+      audioPlayer.playTone(784, 150, volume);
+      audioPlayer.playTone(1047, 300, volume);
       break;
+
     case AUDIO_PAUSE:
-      Serial.print("Pause");
-      audioData = audio_prompt_pause;
-      audioSize = audio_prompt_pause_SIZE;
+      // Single low tone — paused
+      Serial.println("Pause)");
+      audioPlayer.playTone(440, 400, volume);
       break;
+
     case AUDIO_RESUME:
-      Serial.print("Resume");
-      audioData = audio_prompt_resume;
-      audioSize = audio_prompt_resume_SIZE;
+      // Two ascending tones — resuming
+      Serial.println("Resume)");
+      audioPlayer.playTone(440, 150, volume);
+      audioPlayer.playTone(523, 150, volume);
       break;
+
     default:
       Serial.println("Unknown)");
       Serial.println("Invalid audio event ID");
       return;
-  }
-
-  Serial.print(") at volume ");
-  Serial.println(volume);
-
-  // Play voice prompt from flash memory
-  if (audioData != nullptr && audioSize > 0) {
-    // Debug: Print pointer address and first few samples
-    Serial.print("Audio data pointer: 0x");
-    Serial.println((uint32_t)audioData, HEX);
-    Serial.print("Audio size: ");
-    Serial.println(audioSize);
-
-    // Try reading samples directly from different offsets (nRF52 reads flash directly)
-    Serial.print("Direct read test - Sample [0]: ");
-    Serial.println(audioData[0]);
-    Serial.print("Direct read test - Sample [500]: ");
-    Serial.println(audioData[500]);
-    Serial.print("Direct read test - Sample [2000]: ");
-    Serial.println(audioData[2000]);
-    Serial.print("Direct read test - Sample [3600]: ");
-    Serial.println(audioData[3600]);
-
-    audioPlayer.playBuffer(audioData, audioSize, volume);
-  } else {
-    Serial.println("ERROR: No audio data for this event!");
   }
 }
 
