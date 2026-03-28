@@ -3,7 +3,10 @@ package com.orotrain.oro
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.orotrain.oro.analysis.StrokeAnalyzer
+import com.orotrain.oro.coaching.CoachingEngine
 import com.orotrain.oro.ble.BleManager
+import com.orotrain.oro.data.SessionRepository
 import com.orotrain.oro.model.AppDestination
 import com.orotrain.oro.model.DeviceStatus
 import com.orotrain.oro.model.HapticDevice
@@ -25,7 +28,8 @@ import kotlinx.coroutines.launch
 
 class MainViewModel(
     private val bleManager: BleManager? = null,
-    private val audioManager: com.orotrain.oro.audio.AudioManager? = null
+    private val audioManager: com.orotrain.oro.audio.AudioManager? = null,
+    private val sessionRepository: SessionRepository? = null
 ) : ViewModel() {
 
     companion object {
@@ -34,6 +38,12 @@ class MainViewModel(
 
     private val _uiState = MutableStateFlow(OroUiState())
     val uiState: StateFlow<OroUiState> = _uiState.asStateFlow()
+
+    // Stroke analytics engine
+    val strokeAnalyzer = StrokeAnalyzer()
+
+    // Real-time coaching feedback engine
+    private val coachingEngine = CoachingEngine(bleManager, audioManager)
 
     init {
         // Observe BLE manager state if available
@@ -87,9 +97,24 @@ class MainViewModel(
                 }
             }
         }
+
+        // Observe coaching events from StrokeAnalyzer and forward to CoachingEngine
+        viewModelScope.launch {
+            strokeAnalyzer.coachingEvents.collect { event ->
+                event?.let {
+                    val deviceIds = _uiState.value.devices
+                        .filter { d -> d.status == DeviceStatus.Connected }
+                        .map { d -> d.id }
+                    coachingEngine.onCoachingEvent(it, deviceIds)
+                }
+            }
+        }
     }
 
     private fun handleStrokeEvent(event: BleManager.StrokeEvent) {
+        // Forward to analytics engine
+        strokeAnalyzer.onStrokeEvent(event)
+
         _uiState.update { state ->
             val updatedDevices = state.devices.map { device ->
                 if (device.id == event.deviceId) {
@@ -185,6 +210,11 @@ class MainViewModel(
             }
             state.copy(devices = updatedDevices)
         }
+
+        // Drive LED feedback based on grip force (during active training)
+        if (_uiState.value.trainingSession.status == com.orotrain.oro.model.TrainingStatus.Active) {
+            coachingEngine.onFsrUpdate(update.deviceId, update.forcePercent)
+        }
     }
 
     fun setLedColor(deviceId: String, r: Int, g: Int, b: Int) {
@@ -205,6 +235,11 @@ class MainViewModel(
         // Update recent stroke timestamps for SPM calculation (keep last 10)
         val updatedTimestamps = (session.recentStrokeTimestamps + strokeTimestamp).takeLast(10)
         val calculatedSpm = calculateSpm(updatedTimestamps)
+
+        // Check pace deviation every 10 strokes
+        if (newStroke % 10 == 0) {
+            strokeAnalyzer.checkPaceDeviation(currentZone.targetSpm)
+        }
 
         // Audio: Halfway announcement
         if (newStroke == currentZone.strokes / 2) {
@@ -762,6 +797,10 @@ class MainViewModel(
             return
         }
 
+        // Reset analytics and coaching for new session
+        strokeAnalyzer.reset()
+        coachingEngine.reset()
+
         // Set status to Starting
         _uiState.update {
             it.copy(
@@ -900,6 +939,15 @@ class MainViewModel(
         // Disable stroke detection on pacer
         val pacer = state.devices.find { it.seat == 1 && it.status == DeviceStatus.Connected }
         pacer?.let { disableStrokeDetection(it.id) }
+
+        // Save session data to database
+        viewModelScope.launch {
+            try {
+                sessionRepository?.saveSession(strokeAnalyzer, state.trainingSession)
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to save session: ${e.message}")
+            }
+        }
 
         // Reset to idle after delay
         viewModelScope.launch {

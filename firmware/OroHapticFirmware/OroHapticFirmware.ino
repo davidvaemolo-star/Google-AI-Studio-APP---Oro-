@@ -44,6 +44,12 @@
 #define BATTERY_PIN A0
 #define BATTERY_READ_INTERVAL 30000  // Read every 30 seconds
 
+// FSR (Force Sensitive Resistor) Configuration
+#define FSR_PIN A3                    // Analog pin for FSR
+#define FSR_READ_INTERVAL_MS 50       // Read every 50ms (20Hz) - sufficient for grip monitoring
+#define FSR_THRESHOLD_PERCENT 70      // Default threshold for "too much grip" (0-100%)
+#define FSR_SMOOTHING_FACTOR 0.3f     // EMA smoothing (lower = smoother, higher = more responsive)
+
 // DRV2605L Configuration
 Adafruit_DRV2605 drv;
 
@@ -74,6 +80,8 @@ AudioI2S audioPlayer;
 #define STROKE_EVENT_CHAR_UUID      "12340005-1234-5678-1234-56789abcdef0"  // Notify - stroke detection events
 #define CALIBRATION_CHAR_UUID       "12340006-1234-5678-1234-56789abcdef0"  // Write/Notify - calibration control
 #define AUDIO_CONTROL_CHAR_UUID     "12340007-1234-5678-1234-56789abcdef0"  // Write - trigger audio prompts
+#define FSR_DATA_CHAR_UUID          "12340008-1234-5678-1234-56789abcdef0"  // Notify - FSR force data
+#define LED_CONTROL_CHAR_UUID       "12340009-1234-5678-1234-56789abcdef0"  // Write - LED control
 
 // Standard Battery Service
 #define BATTERY_SERVICE_UUID        "180F"
@@ -116,6 +124,14 @@ BLECharacteristic calibrationChar = BLECharacteristic(CALIBRATION_CHAR_UUID);
 // Audio Control: Write only
 // Format: [audio_event(1 byte)][volume(1 byte)]
 BLECharacteristic audioControlChar = BLECharacteristic(AUDIO_CONTROL_CHAR_UUID);
+
+// FSR Data: Notify only
+// Format: [force_percent(1 byte)][raw_adc(2 bytes LE)][threshold_triggered(1 byte)]
+BLECharacteristic fsrDataChar = BLECharacteristic(FSR_DATA_CHAR_UUID);
+
+// LED Control: Write only
+// Format: [command(1 byte)][r(1 byte)][g(1 byte)][b(1 byte)][param(1 byte)]
+BLECharacteristic ledControlChar = BLECharacteristic(LED_CONTROL_CHAR_UUID);
 
 // ============================================================================
 // DEVICE STATE MANAGEMENT
@@ -214,6 +230,11 @@ struct StrokeDetectionState {
   float maxAccel;                // Peak acceleration during current stroke
   float minAccel;                // Minimum (most negative) during recovery
   bool inStroke;                 // Currently in a stroke cycle
+  // Phase timing (for enriched stroke events)
+  unsigned long catchTimestamp;   // millis() when CATCH detected
+  unsigned long driveTimestamp;   // millis() when DRIVE detected
+  unsigned long finishTimestamp;  // millis() when FINISH detected
+  uint8_t fsrPeakDuringStroke;   // Peak FSR force% during this stroke
 };
 
 StrokeDetectionState strokeDetection = {
@@ -223,7 +244,9 @@ StrokeDetectionState strokeDetection = {
   0,                             // no strokes yet
   0.0,                           // no peak yet
   0.0,                           // no minimum yet
-  false                          // not in stroke
+  false,                         // not in stroke
+  0, 0, 0,                       // phase timestamps
+  0                              // FSR peak during stroke
 };
 
 // Calibration State
@@ -235,6 +258,19 @@ struct CalibrationState {
 };
 
 CalibrationState calibrationState = {false, 0, 0.0, 0.0};
+
+// FSR State
+struct FsrState {
+  float smoothedValue;        // EMA-filtered normalized reading (0.0 - 1.0)
+  uint16_t rawAdc;            // Last raw ADC reading (0-4095)
+  uint8_t forcePercent;       // Mapped 0-100%
+  bool thresholdTriggered;    // Above grip threshold?
+  unsigned long lastReadTime; // Last read timestamp
+  uint16_t calibrationMin;    // Min ADC seen (no grip) - for auto-ranging
+  uint16_t calibrationMax;    // Max ADC seen (max grip) - for auto-ranging
+};
+
+FsrState fsrState = {0.0f, 0, 0, false, 0, 100, 900};  // Reasonable defaults for typical FSR
 
 // Battery monitoring
 const float BATTERY_DIVIDER_RATIO = (1000000.0f + 510000.0f) / 510000.0f;  // 2.960784
@@ -299,6 +335,10 @@ void setup() {
     trainingState.deviceState = STATE_ERROR;
     while(1) { delay(1000); }
   }
+
+  // Initialize FSR
+  pinMode(FSR_PIN, INPUT);
+  Serial.println("FSR initialized on pin A3");
 
   // Initialize battery monitoring
   pinMode(BATTERY_PIN, INPUT);
@@ -435,10 +475,10 @@ bool initializeBLE() {
   connectionStatusChar.setFixedLen(2);
   connectionStatusChar.begin();
 
-  // Stroke Event Characteristic (Notify only)
+  // Stroke Event Characteristic (Notify only) - Enriched 16-byte packet
   strokeEventChar.setProperties(CHR_PROPS_NOTIFY);
   strokeEventChar.setPermission(SECMODE_OPEN, SECMODE_NO_ACCESS);
-  strokeEventChar.setFixedLen(7);  // 1 byte phase + 4 bytes timestamp + 2 bytes accel
+  strokeEventChar.setFixedLen(16);  // phase(1) + timestamp(4) + accel(2) + peak(2) + min(2) + duration(2) + fsr(1) + flags(1) + reserved(1)
   strokeEventChar.begin();
 
   // Calibration Characteristic (Write + Notify)
@@ -454,6 +494,19 @@ bool initializeBLE() {
   audioControlChar.setFixedLen(2);  // 1 byte audio event + 1 byte volume
   audioControlChar.setWriteCallback(onAudioControlWrite);
   audioControlChar.begin();
+
+  // FSR Data Characteristic (Notify)
+  fsrDataChar.setProperties(CHR_PROPS_NOTIFY);
+  fsrDataChar.setPermission(SECMODE_OPEN, SECMODE_NO_ACCESS);
+  fsrDataChar.setFixedLen(4);  // [forcePercent(1)][rawAdc(2 LE)][thresholdTriggered(1)]
+  fsrDataChar.begin();
+
+  // LED Control Characteristic (Write)
+  ledControlChar.setProperties(CHR_PROPS_WRITE);
+  ledControlChar.setPermission(SECMODE_OPEN, SECMODE_OPEN);
+  ledControlChar.setFixedLen(5);  // [command(1)][r(1)][g(1)][b(1)][param(1)]
+  ledControlChar.setWriteCallback(onLedControlWrite);
+  ledControlChar.begin();
 
   // Configure Battery Service
   batteryService.begin();
@@ -843,6 +896,9 @@ void loop() {
     updateBatteryLevel();
     lastBatteryRead = millis();
   }
+
+  // Handle FSR reading (always active when connected)
+  handleFsrReading();
 
   // Handle stroke detection (if enabled)
   if (strokeDetection.enabled || calibrationState.active) {
@@ -1303,6 +1359,82 @@ void updateConnectionStatus() {
 }
 
 // ============================================================================
+// FSR READING AND LED CONTROL
+// ============================================================================
+
+void handleFsrReading() {
+  unsigned long now = millis();
+  if (now - fsrState.lastReadTime < FSR_READ_INTERVAL_MS) return;
+  fsrState.lastReadTime = now;
+
+  // Read raw ADC (12-bit: 0-4095)
+  uint16_t rawAdc = analogRead(FSR_PIN);
+  fsrState.rawAdc = rawAdc;
+
+  // Auto-calibrate min/max range (expand range as new extremes are seen)
+  if (rawAdc < fsrState.calibrationMin && rawAdc > 10) {
+    fsrState.calibrationMin = rawAdc;
+  }
+  if (rawAdc > fsrState.calibrationMax) {
+    fsrState.calibrationMax = rawAdc;
+  }
+
+  // EMA smoothing on normalized value
+  float normalized = rawAdc / 4095.0f;
+  fsrState.smoothedValue = (FSR_SMOOTHING_FACTOR * normalized) +
+                           ((1.0f - FSR_SMOOTHING_FACTOR) * fsrState.smoothedValue);
+
+  // Map to 0-100% using calibration range
+  uint16_t range = fsrState.calibrationMax - fsrState.calibrationMin;
+  if (range < 50) range = 50;  // Prevent division by very small numbers
+  float mapped = (float)(rawAdc - fsrState.calibrationMin) / (float)range;
+  if (mapped < 0.0f) mapped = 0.0f;
+  if (mapped > 1.0f) mapped = 1.0f;
+  fsrState.forcePercent = (uint8_t)(mapped * 100.0f);
+
+  // Threshold check
+  fsrState.thresholdTriggered = (fsrState.forcePercent >= FSR_THRESHOLD_PERCENT);
+
+  // Send over BLE
+  sendFsrData();
+}
+
+void sendFsrData() {
+  if (!Bluefruit.connected()) return;
+
+  uint8_t data[4];
+  data[0] = fsrState.forcePercent;
+  data[1] = fsrState.rawAdc & 0xFF;         // rawAdc low byte
+  data[2] = (fsrState.rawAdc >> 8) & 0xFF;  // rawAdc high byte
+  data[3] = fsrState.thresholdTriggered ? 0x01 : 0x00;
+
+  fsrDataChar.notify(data, 4);
+}
+
+void onLedControlWrite(uint16_t conn_hdl, BLECharacteristic* chr, uint8_t* data, uint16_t len) {
+  if (len < 4) return;
+
+  uint8_t command = data[0];
+  uint8_t r = data[1];
+  uint8_t g = data[2];
+  uint8_t b = data[3];
+  uint8_t param = (len >= 5) ? data[4] : 0;
+
+  Serial.print("LED control: cmd=0x");
+  Serial.print(command, HEX);
+  Serial.print(" R=");
+  Serial.print(r);
+  Serial.print(" G=");
+  Serial.print(g);
+  Serial.print(" B=");
+  Serial.print(b);
+  Serial.print(" param=");
+  Serial.println(param);
+
+  // TODO: Drive actual LED hardware (NeoPixel, etc.) when connected
+}
+
+// ============================================================================
 // STROKE DETECTION AND CALIBRATION
 // ============================================================================
 
@@ -1374,6 +1506,8 @@ void handleStrokeDetection() {
         strokeDetection.currentPhase = STROKE_PHASE_CATCH;
         strokeDetection.maxAccel = strokeAccel;
         strokeDetection.inStroke = true;
+        strokeDetection.catchTimestamp = currentTime;
+        strokeDetection.fsrPeakDuringStroke = fsrState.forcePercent;
 
         // Send stroke event
         sendStrokeEvent(STROKE_PHASE_CATCH, currentTime, strokeAccel);
@@ -1387,21 +1521,31 @@ void handleStrokeDetection() {
       if (strokeAccel > strokeDetection.maxAccel) {
         strokeDetection.maxAccel = strokeAccel;
       }
+      // Track FSR peak during stroke
+      if (fsrState.forcePercent > strokeDetection.fsrPeakDuringStroke) {
+        strokeDetection.fsrPeakDuringStroke = fsrState.forcePercent;
+      }
 
       // Transition to drive when acceleration starts decreasing (from peak ~1.8g to ~1.2g)
       // For hand movements, require more significant decrease to avoid false triggers
       if (strokeAccel < strokeDetection.maxAccel * 0.5) {
         strokeDetection.currentPhase = STROKE_PHASE_DRIVE;
+        strokeDetection.driveTimestamp = currentTime;
         sendStrokeEvent(STROKE_PHASE_DRIVE, currentTime, strokeAccel);
         Serial.println("DRIVE phase");
       }
       break;
 
     case STROKE_PHASE_DRIVE:
+      // Track FSR peak during stroke
+      if (fsrState.forcePercent > strokeDetection.fsrPeakDuringStroke) {
+        strokeDetection.fsrPeakDuringStroke = fsrState.forcePercent;
+      }
       // Detect finish - when acceleration decreases significantly (relaxed for hand movements during development)
       // For real strokes in water, change back to: if (strokeAccel < 0.0)
       if (strokeAccel < strokeDetection.maxAccel * 0.2) {
         strokeDetection.currentPhase = STROKE_PHASE_FINISH;
+        strokeDetection.finishTimestamp = currentTime;
         strokeDetection.minAccel = strokeAccel;
 
         // Count this as a completed stroke
@@ -1486,20 +1630,53 @@ void handleStrokeDetection() {
 void sendStrokeEvent(StrokePhase phase, unsigned long timestamp, float accelMagnitude) {
   if (!Bluefruit.connected()) return;
 
-  // Format: [phase(1)][timestamp_ms(4)][accel_magnitude(2 bytes as int16)]
-  uint8_t data[7];
+  // Enriched 16-byte format:
+  // [phase(1)][timestamp_ms(4)][accel_current(2)][peak_accel(2)][min_accel(2)]
+  // [phase_duration_ms(2)][fsr_force_percent(1)][stroke_flags(1)][reserved(1)]
+  uint8_t data[16];
   data[0] = (uint8_t)phase;
   data[1] = (timestamp >> 0) & 0xFF;
   data[2] = (timestamp >> 8) & 0xFF;
   data[3] = (timestamp >> 16) & 0xFF;
   data[4] = (timestamp >> 24) & 0xFF;
 
-  // Convert float to int16 (multiply by 100 to preserve 2 decimal places)
+  // Current acceleration (int16 * 100)
   int16_t accelInt = (int16_t)(accelMagnitude * 100.0);
   data[5] = (accelInt >> 0) & 0xFF;
   data[6] = (accelInt >> 8) & 0xFF;
 
-  strokeEventChar.notify(data, 7);
+  // Peak acceleration during this stroke (int16 * 100)
+  int16_t peakInt = (int16_t)(strokeDetection.maxAccel * 100.0);
+  data[7] = (peakInt >> 0) & 0xFF;
+  data[8] = (peakInt >> 8) & 0xFF;
+
+  // Min acceleration during recovery (int16 * 100)
+  int16_t minInt = (int16_t)(strokeDetection.minAccel * 100.0);
+  data[9] = (minInt >> 0) & 0xFF;
+  data[10] = (minInt >> 8) & 0xFF;
+
+  // Phase duration in milliseconds
+  uint16_t phaseDuration = 0;
+  if (phase == STROKE_PHASE_DRIVE && strokeDetection.catchTimestamp > 0) {
+    phaseDuration = (uint16_t)(timestamp - strokeDetection.catchTimestamp);
+  } else if (phase == STROKE_PHASE_FINISH && strokeDetection.driveTimestamp > 0) {
+    phaseDuration = (uint16_t)(timestamp - strokeDetection.driveTimestamp);
+  } else if (phase == STROKE_PHASE_RECOVERY && strokeDetection.finishTimestamp > 0) {
+    phaseDuration = (uint16_t)(timestamp - strokeDetection.finishTimestamp);
+  }
+  data[11] = (phaseDuration >> 0) & 0xFF;
+  data[12] = (phaseDuration >> 8) & 0xFF;
+
+  // FSR force percent at this moment
+  data[13] = fsrState.forcePercent;
+
+  // Stroke flags: bit0 = FSR threshold triggered
+  data[14] = fsrState.thresholdTriggered ? 0x01 : 0x00;
+
+  // Reserved
+  data[15] = 0x00;
+
+  strokeEventChar.notify(data, 16);
 }
 
 void onCalibrationWrite(uint16_t conn_hdl, BLECharacteristic* chr, uint8_t* data, uint16_t len) {

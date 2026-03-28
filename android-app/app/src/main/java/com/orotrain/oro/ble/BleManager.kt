@@ -143,12 +143,17 @@ class BleManager(private val context: Context) {
     private val _isScanning = MutableStateFlow(false)
     val isScanning: StateFlow<Boolean> = _isScanning.asStateFlow()
 
-    // Stroke event data class
+    // Stroke event data class (enriched 16-byte format, backward compatible with 7-byte)
     data class StrokeEvent(
         val deviceId: String,
         val phase: Byte,
         val timestamp: Long,
-        val accelMagnitude: Float
+        val accelMagnitude: Float,
+        val peakAccel: Float = 0f,        // Peak acceleration during this stroke (g)
+        val minAccel: Float = 0f,         // Min acceleration during recovery (g)
+        val phaseDurationMs: Int = 0,     // Duration of current phase (ms)
+        val fsrForcePercent: Int = 0,     // FSR reading at this moment (0-100)
+        val strokeFlags: Int = 0          // Bit flags: bit0=fsr_threshold_triggered
     )
 
     data class BroadcastResult(
@@ -672,7 +677,8 @@ class BleManager(private val context: Context) {
     ) {
         when (characteristic.uuid) {
             STROKE_EVENT_UUID -> {
-                if (value.size != 7) return
+                // Support both 7-byte (legacy) and 16-byte (enriched) packets
+                if (value.size < 7) return
                 val phase = value[0]
                 val timestamp = ((value[4].toInt() and 0xFF).toLong() shl 24) or
                         ((value[3].toInt() and 0xFF).toLong() shl 16) or
@@ -682,16 +688,35 @@ class BleManager(private val context: Context) {
                         (value[5].toInt() and 0xFF)
                 val accelMagnitude = accelInt.toShort() / 100.0f
 
+                // Extended fields from 16-byte enriched packet
+                val peakAccel = if (value.size >= 16) {
+                    (((value[8].toInt() and 0xFF) shl 8) or (value[7].toInt() and 0xFF)).toShort() / 100.0f
+                } else 0f
+                val minAccel = if (value.size >= 16) {
+                    (((value[10].toInt() and 0xFF) shl 8) or (value[9].toInt() and 0xFF)).toShort() / 100.0f
+                } else 0f
+                val phaseDurationMs = if (value.size >= 16) {
+                    (value[11].toInt() and 0xFF) or ((value[12].toInt() and 0xFF) shl 8)
+                } else 0
+                val fsrForcePercent = if (value.size >= 16) value[13].toInt() and 0xFF else 0
+                val strokeFlags = if (value.size >= 16) value[14].toInt() and 0xFF else 0
+
                 val strokeEvent = StrokeEvent(
                     deviceId = gatt.device.address,
                     phase = phase,
                     timestamp = timestamp,
-                    accelMagnitude = accelMagnitude
+                    accelMagnitude = accelMagnitude,
+                    peakAccel = peakAccel,
+                    minAccel = minAccel,
+                    phaseDurationMs = phaseDurationMs,
+                    fsrForcePercent = fsrForcePercent,
+                    strokeFlags = strokeFlags
                 )
 
                 _strokeEvents.value = strokeEvent
 
-                Log.d(TAG, "Stroke event from ${gatt.device.address}: phase=$phase, accel=$accelMagnitude")
+                Log.d(TAG, "Stroke event from ${gatt.device.address}: phase=$phase, accel=$accelMagnitude, " +
+                    "peak=$peakAccel, min=$minAccel, phaseDur=${phaseDurationMs}ms, fsr=$fsrForcePercent%")
 
             }
             DEVICE_STATUS_UUID -> {
