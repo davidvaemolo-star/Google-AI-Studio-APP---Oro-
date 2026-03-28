@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.BatteryChargingFull
@@ -43,7 +44,8 @@ fun DeviceCard(
     seatRole: String? = null,
     isDragging: Boolean = false,
     onStartCalibration: ((String) -> Unit)? = null,
-    onStopCalibration: ((String) -> Unit)? = null
+    onStopCalibration: ((String) -> Unit)? = null,
+    onShowLedControl: ((String) -> Unit)? = null
 ) {
     val (statusText, buttonLabel, statusColor) = when (device.status) {
         DeviceStatus.Disconnected -> Triple("Disconnected", "Connect", Color.White.copy(alpha = 0.6f))
@@ -145,6 +147,38 @@ fun DeviceCard(
                         fontWeight = FontWeight.Medium
                     )
                 }
+
+                // FSR force bar
+                if (device.fsrForcePercent > 0) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Text(
+                            text = "Force: ${device.fsrForcePercent}%",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (device.fsrThresholdTriggered) Color(0xFFFF6E6E) else Color(0xFF3ADE8A),
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(6.dp)
+                            .clip(RoundedCornerShape(3.dp))
+                            .background(Color.White.copy(alpha = 0.1f))
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth(device.fsrForcePercent / 100f)
+                                .height(6.dp)
+                                .clip(RoundedCornerShape(3.dp))
+                                .background(
+                                    if (device.fsrThresholdTriggered) Color(0xFFFF6E6E) else Color(0xFF3ADE8A)
+                                )
+                        )
+                    }
+                }
             }
         }
 
@@ -190,6 +224,24 @@ fun DeviceCard(
                         text = if (device.isCalibrating) "Stop Cal" else "Calibrate",
                         style = MaterialTheme.typography.bodySmall,
                         color = Charcoal
+                    )
+                }
+            }
+
+            // LED control button for connected devices
+            if (device.status == DeviceStatus.Connected && onShowLedControl != null) {
+                Button(
+                    onClick = { onShowLedControl.invoke(device.id) },
+                    modifier = Modifier,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Color(0xFF7B61FF)
+                    ),
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
+                ) {
+                    Text(
+                        text = "LED",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Color.White
                     )
                 }
             }

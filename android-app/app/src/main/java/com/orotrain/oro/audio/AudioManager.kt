@@ -189,6 +189,15 @@ class AudioManager(private val context: Context) {
         }
     }
 
+    /**
+     * Speak a coaching tip with QUEUE_FLUSH to interrupt pending speech.
+     * Coaching tips are time-sensitive and should take priority.
+     */
+    fun speakCoachingTip(message: String) {
+        speak(message, TextToSpeech.QUEUE_FLUSH)
+        Log.d(TAG, "Coaching tip: $message")
+    }
+
     // Core TTS function
 
     private fun speak(text: String, queueMode: Int = TextToSpeech.QUEUE_ADD) {

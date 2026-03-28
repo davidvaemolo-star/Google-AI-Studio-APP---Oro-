@@ -19,6 +19,8 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import com.orotrain.oro.ble.BleManager
+import com.orotrain.oro.data.SessionDatabase
+import com.orotrain.oro.data.SessionRepository
 import com.orotrain.oro.ui.OroApp
 import com.orotrain.oro.ui.theme.OroTheme
 
@@ -58,10 +60,14 @@ class MainActivity : ComponentActivity() {
         bleManager = BleManager(applicationContext)
         audioManager = com.orotrain.oro.audio.AudioManager(applicationContext)
 
-        // Create ViewModel with BleManager and AudioManager
+        // Initialize session database and repository
+        val database = SessionDatabase.getInstance(applicationContext)
+        val sessionRepository = SessionRepository(database.sessionDao())
+
+        // Create ViewModel with BleManager, AudioManager, and SessionRepository
         viewModel = ViewModelProvider(
             this,
-            MainViewModelFactory(bleManager, audioManager)
+            MainViewModelFactory(bleManager, audioManager, sessionRepository)
         )[MainViewModel::class.java]
 
         // Check and request permissions
@@ -126,15 +132,16 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-// ViewModelFactory to inject BleManager and AudioManager
+// ViewModelFactory to inject BleManager, AudioManager, and SessionRepository
 class MainViewModelFactory(
     private val bleManager: BleManager,
-    private val audioManager: com.orotrain.oro.audio.AudioManager
+    private val audioManager: com.orotrain.oro.audio.AudioManager,
+    private val sessionRepository: SessionRepository
 ) : ViewModelProvider.Factory {
     @Suppress("UNCHECKED_CAST")
     override fun <T : ViewModel> create(modelClass: Class<T>): T {
         if (modelClass.isAssignableFrom(MainViewModel::class.java)) {
-            return MainViewModel(bleManager, audioManager) as T
+            return MainViewModel(bleManager, audioManager, sessionRepository) as T
         }
         throw IllegalArgumentException("Unknown ViewModel class")
     }
