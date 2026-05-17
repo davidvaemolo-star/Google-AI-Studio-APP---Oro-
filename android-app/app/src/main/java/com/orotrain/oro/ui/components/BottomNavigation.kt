@@ -3,6 +3,7 @@ package com.orotrain.oro.ui.components
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Bluetooth
 import androidx.compose.material.icons.rounded.FitnessCenter
+import androidx.compose.material.icons.rounded.FolderOpen
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
@@ -25,6 +26,29 @@ fun BottomNavigationBar(
         modifier = modifier,
         containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.85f)
     ) {
+        NavigationBarItem(
+            selected = current == AppDestination.Programmes,
+            onClick = { onSelect(AppDestination.Programmes) },
+            icon = {
+                androidx.compose.material3.Icon(
+                    imageVector = Icons.Rounded.FolderOpen,
+                    contentDescription = "Programmes"
+                )
+            },
+            label = {
+                Text(
+                    text = "Programmes",
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.Bold
+                )
+            },
+            colors = NavigationBarItemDefaults.colors(
+                selectedIconColor = MaterialTheme.colorScheme.primary,
+                selectedTextColor = MaterialTheme.colorScheme.primary,
+                indicatorColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)
+            )
+        )
+
         NavigationBarItem(
             selected = current == AppDestination.Connection,
             onClick = { onSelect(AppDestination.Connection) },
