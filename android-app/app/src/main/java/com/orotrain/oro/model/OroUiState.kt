@@ -23,7 +23,5 @@ data class OroUiState(
         get() = activeProgramme != null &&
                 connectedDevicesCount > 0 &&
                 zones.isNotEmpty() &&
-                !trainingSession.isActive &&
-                devices.filter { it.status == DeviceStatus.Connected }
-                    .all { it.batteryLevel != null && it.batteryLevel > 20 }
+                !trainingSession.isActive
 }
