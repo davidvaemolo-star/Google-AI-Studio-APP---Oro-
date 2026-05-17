@@ -40,6 +40,12 @@ data class Zone(
     val spm: Int get() = targetSpm
 }
 
+data class Programme(
+    val id: String = UUID.randomUUID().toString(),
+    val name: String,
+    val zones: List<Zone> = emptyList()
+)
+
 enum class ZoneField {
     Strokes,
     Sets,
@@ -65,6 +71,7 @@ data class HapticDevice(
 )
 
 enum class AppDestination {
+    Programmes,
     Connection,
     Training
 }
