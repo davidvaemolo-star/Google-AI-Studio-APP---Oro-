@@ -48,7 +48,9 @@ class MainViewModel(
     private val coachingEngine = CoachingEngine(bleManager, audioManager)
 
     // Tracks Android-side receive time of pacer's last CATCH event for sync latency calculation
-    private var pacerLastCatchReceivedMs: Long? = null
+    @Volatile private var pacerLastCatchReceivedMs: Long? = null
+    // Running (sum, count) per follower device for session-average sync latency
+    private val syncLatencyAccumulator = mutableMapOf<String, Pair<Long, Int>>()
 
     init {
         // Observe BLE manager state if available
@@ -127,22 +129,13 @@ class MainViewModel(
             strokeAnalyzer.onStrokeEvent(event)
         }
 
-        // Track sync latency: measure Android receive time delta between pacer and follower CATCH events
+        // Record pacer CATCH receive time before entering the state update (captures nowMs once)
+        val nowMs = System.currentTimeMillis()
         if (_uiState.value.trainingSession.status == com.orotrain.oro.model.TrainingStatus.Active &&
             event.phase == BleManager.STROKE_PHASE_CATCH) {
             val pacer = _uiState.value.devices.find { it.seat == 1 }
-            val nowMs = System.currentTimeMillis()
             if (event.deviceId == pacer?.id) {
                 pacerLastCatchReceivedMs = nowMs
-            } else {
-                val pacerTs = pacerLastCatchReceivedMs
-                if (pacerTs != null) {
-                    val latencyMs = (nowMs - pacerTs).toInt().coerceIn(0, 5000)
-                    _uiState.update { s ->
-                        val newSyncQuality = s.trainingSession.syncQuality + (event.deviceId to latencyMs)
-                        s.copy(trainingSession = s.trainingSession.copy(syncQuality = newSyncQuality))
-                    }
-                }
             }
         }
 
@@ -164,9 +157,10 @@ class MainViewModel(
                 }
             }
 
-            // Update training session progress if active and event is from pacer
             val pacer = state.devices.find { it.seat == 1 }
-            val updatedSession = if (state.trainingSession.status == com.orotrain.oro.model.TrainingStatus.Active &&
+
+            // Update training session progress if active and event is from pacer
+            val sessionAfterProgress = if (state.trainingSession.status == com.orotrain.oro.model.TrainingStatus.Active &&
                 event.deviceId == pacer?.id &&
                 event.phase == BleManager.STROKE_PHASE_FINISH) {
 
@@ -178,6 +172,27 @@ class MainViewModel(
                 }
             } else {
                 state.trainingSession
+            }
+
+            // Update session-average sync quality on follower CATCH events
+            val updatedSession = if (state.trainingSession.status == com.orotrain.oro.model.TrainingStatus.Active &&
+                event.phase == BleManager.STROKE_PHASE_CATCH &&
+                event.deviceId != pacer?.id) {
+                val pacerTs = pacerLastCatchReceivedMs
+                if (pacerTs != null) {
+                    val latencyMs = (nowMs - pacerTs).toInt().coerceIn(0, 2000)
+                    val (prevSum, prevCount) = syncLatencyAccumulator.getOrDefault(event.deviceId, Pair(0L, 0))
+                    val newSum = prevSum + latencyMs
+                    val newCount = prevCount + 1
+                    syncLatencyAccumulator[event.deviceId] = Pair(newSum, newCount)
+                    sessionAfterProgress.copy(
+                        syncQuality = sessionAfterProgress.syncQuality + (event.deviceId to (newSum / newCount).toInt())
+                    )
+                } else {
+                    sessionAfterProgress
+                }
+            } else {
+                sessionAfterProgress
             }
 
             state.copy(
@@ -1135,6 +1150,7 @@ class MainViewModel(
         val state = _uiState.value
         if (!state.trainingSession.isActive) return
         pacerLastCatchReceivedMs = null
+        syncLatencyAccumulator.clear()
 
         _uiState.update {
             it.copy(
