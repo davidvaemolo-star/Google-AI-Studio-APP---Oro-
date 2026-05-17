@@ -352,6 +352,16 @@ class StrokeAnalyzer {
         } else null
     }
 
+    /**
+     * Returns the average peak top-hand pressure across all strokes in the session.
+     * Used to compute Power Range for the Session Summary prompt.
+     * Returns 0 if no strokes have been recorded.
+     */
+    fun sessionAverageFsrPeak(): Int {
+        if (allStrokes.isEmpty()) return 0
+        return allStrokes.map { it.fsrPeakPercent }.average().toInt()
+    }
+
     fun reset() {
         allStrokes.clear()
         lastCoachingTime.clear()
