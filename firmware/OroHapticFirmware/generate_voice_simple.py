@@ -2,7 +2,7 @@
 """
 Simple Voice Prompt Generator for Oro Haptic Paddle
 Uses gTTS (free, no API key required) for text-to-speech
-Requires: pip install gtts pydub
+Requires: pip install gtts
 
 This script generates voice prompts and automatically converts them to the correct format.
 """
@@ -117,7 +117,7 @@ if __name__ == "__main__":
     except ImportError as e:
         print("\nERROR: Missing required libraries!")
         print("\nPlease install dependencies:")
-        print("  pip install gtts pydub")
+        print("  pip install gtts")
         print("\nNote: You may also need ffmpeg or libav for audio conversion:")
         print("  Windows: Download from https://ffmpeg.org/download.html")
         print("  Linux: sudo apt-get install ffmpeg")

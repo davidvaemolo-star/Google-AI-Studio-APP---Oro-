@@ -173,7 +173,7 @@ const AudioPromptInfo AUDIO_PROMPT_TABLE[] = {
   {audio_prompt_summary_excellent_maximum, audio_prompt_summary_excellent_maximum_SIZE}, // 0x13
 };
 
-#define AUDIO_PROMPT_COUNT 19
+#define AUDIO_PROMPT_COUNT 19  // = highest valid enum index; table has COUNT+1 entries (includes 0x00)
 
 #endif // AUDIO_PROMPTS_H
 """
