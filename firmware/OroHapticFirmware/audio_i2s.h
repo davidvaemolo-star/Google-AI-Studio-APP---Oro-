@@ -36,7 +36,7 @@
 #define SD_MODE_PIN   D6  // D6 Arduino pin - Shutdown mode control (HIGH = enabled)
 
 // Audio configuration
-#define SAMPLE_RATE 16000           // 16kHz sample rate
+#define SAMPLE_RATE 32000           // 32kHz sample rate
 #define AUDIO_BUFFER_SIZE 256       // Sample buffer size (adjust for memory vs latency)
 #define MAX_TONE_DURATION_MS 2000   // Maximum tone duration to prevent blocking
 
