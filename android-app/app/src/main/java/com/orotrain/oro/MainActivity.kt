@@ -63,11 +63,12 @@ class MainActivity : ComponentActivity() {
         // Initialize session database and repository
         val database = SessionDatabase.getInstance(applicationContext)
         val sessionRepository = SessionRepository(database.sessionDao())
+        val programmeRepository = com.orotrain.oro.data.ProgrammeRepository(filesDir)
 
         // Create ViewModel with BleManager, AudioManager, and SessionRepository
         viewModel = ViewModelProvider(
             this,
-            MainViewModelFactory(bleManager, audioManager, sessionRepository)
+            MainViewModelFactory(bleManager, audioManager, sessionRepository, programmeRepository)
         )[MainViewModel::class.java]
 
         // Check and request permissions
@@ -132,16 +133,16 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-// ViewModelFactory to inject BleManager, AudioManager, and SessionRepository
 class MainViewModelFactory(
     private val bleManager: BleManager,
     private val audioManager: com.orotrain.oro.audio.AudioManager,
-    private val sessionRepository: SessionRepository
+    private val sessionRepository: SessionRepository,
+    private val programmeRepository: com.orotrain.oro.data.ProgrammeRepository
 ) : ViewModelProvider.Factory {
     @Suppress("UNCHECKED_CAST")
     override fun <T : ViewModel> create(modelClass: Class<T>): T {
         if (modelClass.isAssignableFrom(MainViewModel::class.java)) {
-            return MainViewModel(bleManager, audioManager, sessionRepository) as T
+            return MainViewModel(bleManager, audioManager, sessionRepository, programmeRepository) as T
         }
         throw IllegalArgumentException("Unknown ViewModel class")
     }

@@ -49,6 +49,7 @@ fun TrainingScreen(
     onAddAfterZone: (String) -> Unit,
     onAdjustZone: (String, ZoneField, Int) -> Unit,
     onReorderZones: (Int, Int) -> Unit,
+    onGoToProgrammes: () -> Unit = {},
     onStartTraining: () -> Unit = {},
     onPauseTraining: () -> Unit = {},
     onResumeTraining: () -> Unit = {},
@@ -72,6 +73,20 @@ fun TrainingScreen(
             horizontalArrangement = Arrangement.spacedBy(20.dp),
             verticalArrangement = Arrangement.spacedBy(20.dp)
         ) {
+        // Programme name header
+        if (state.activeProgramme != null) {
+            item(span = { GridItemSpan(maxLineSpan) }) {
+                Text(
+                    text = state.activeProgramme.name,
+                    style = MaterialTheme.typography.headlineSmall,
+                    fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 4.dp)
+                )
+            }
+        }
+
         item(span = { GridItemSpan(maxLineSpan) }) {
             Box(
                 modifier = Modifier.fillMaxWidth(),
@@ -122,11 +137,27 @@ fun TrainingScreen(
                         .padding(top = 64.dp),
                     contentAlignment = Alignment.TopCenter
                 ) {
-                    Text(
-                        text = "Tap Add Training Zone to start building your plan.",
-                        style = MaterialTheme.typography.titleMedium,
-                        color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.75f)
-                    )
+                    if (state.activeProgramme == null) {
+                        androidx.compose.foundation.layout.Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            Text(
+                                text = "No programme loaded",
+                                style = MaterialTheme.typography.titleMedium,
+                                color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.75f)
+                            )
+                            Button(onClick = onGoToProgrammes) {
+                                Text("Go to Programmes")
+                            }
+                        }
+                    } else {
+                        Text(
+                            text = "Tap Add Training Zone to add zones to this session.",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.75f)
+                        )
+                    }
                 }
             }
         } else {
