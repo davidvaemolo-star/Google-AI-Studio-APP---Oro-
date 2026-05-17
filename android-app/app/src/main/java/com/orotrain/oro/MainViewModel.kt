@@ -119,8 +119,10 @@ class MainViewModel(
     }
 
     private fun handleStrokeEvent(event: BleManager.StrokeEvent) {
-        // Forward to analytics engine
-        strokeAnalyzer.onStrokeEvent(event)
+        // Forward to analytics engine only during active training
+        if (_uiState.value.trainingSession.status == com.orotrain.oro.model.TrainingStatus.Active) {
+            strokeAnalyzer.onStrokeEvent(event)
+        }
 
         _uiState.update { state ->
             val updatedDevices = state.devices.map { device ->
@@ -248,23 +250,6 @@ class MainViewModel(
             strokeAnalyzer.checkPaceDeviation(currentZone.targetSpm)
         }
 
-        // Audio: Halfway announcement
-        if (newStroke == currentZone.strokes / 2) {
-            audioManager?.announceHalfway(newStroke, currentZone.strokes)
-            broadcastAudioPrompt(BleManager.AUDIO_HALFWAY, 80)
-        }
-
-        // Audio: Warning before zone transition (5 strokes remaining)
-        if (newStroke == currentZone.strokes && session.currentSet == currentZone.sets) {
-            val state = _uiState.value
-            val nextZoneIndex = session.currentZoneIndex + 1
-            if (nextZoneIndex < state.zones.size) {
-                val nextZone = state.zones[nextZoneIndex]
-                audioManager?.announceZoneTransition(nextZone, nextZoneIndex + 1, state.zones.size, 5)
-                broadcastAudioPrompt(BleManager.AUDIO_ZONE_TRANSITION, 90)
-            }
-        }
-
         // Check if set is complete
         return if (newStroke >= currentZone.strokes) {
             val newSet = session.currentSet + 1
@@ -274,15 +259,23 @@ class MainViewModel(
                 advanceToNextZone(session, updatedTimestamps, calculatedSpm)
             } else {
                 // Move to next set
-                // Audio: Set complete announcement
-                audioManager?.announceSetComplete(session.currentSet, currentZone.sets)
-                audioManager?.playSetCompleteSound()
-                broadcastAudioPrompt(BleManager.AUDIO_SET_COMPLETE, 100)
+                // Beep: set complete changeover
+                broadcastAudioPrompt(BleManager.AUDIO_SET_CHANGEOVER_BEEP, 100)
 
-                // Audio: Last set announcement
+                // Voice: entering last set of this zone
                 if (newSet == currentZone.sets) {
-                    audioManager?.announceLastSet()
-                    broadcastAudioPrompt(BleManager.AUDIO_LAST_SET, 100)
+                    val state = _uiState.value
+                    val nextZoneIndex = session.currentZoneIndex + 1
+                    if (nextZoneIndex < state.zones.size) {
+                        val nextZoneEvent = when (state.zones[nextZoneIndex].level) {
+                            com.orotrain.oro.model.ZoneLevel.Low    -> BleManager.AUDIO_NEXT_SET_LOW
+                            com.orotrain.oro.model.ZoneLevel.Medium -> BleManager.AUDIO_NEXT_SET_MEDIUM
+                            com.orotrain.oro.model.ZoneLevel.High   -> BleManager.AUDIO_NEXT_SET_HIGH
+                        }
+                        broadcastAudioPrompt(nextZoneEvent, 100)
+                    } else {
+                        broadcastAudioPrompt(BleManager.AUDIO_LAST_SET, 100)
+                    }
                 }
 
                 session.copy(
@@ -312,13 +305,6 @@ class MainViewModel(
 
         return if (nextZoneIndex < state.zones.size) {
             // Move to next zone
-            val nextZone = state.zones[nextZoneIndex]
-
-            // Audio: Zone transition announcement
-            audioManager?.playZoneTransitionSound()
-            audioManager?.announceZoneTransition(nextZone, nextZoneIndex + 1, state.zones.size, 0)
-            broadcastAudioPrompt(BleManager.AUDIO_ZONE_TRANSITION, 100)
-
             viewModelScope.launch {
                 configureCurrentZone()
             }
@@ -332,11 +318,8 @@ class MainViewModel(
             )
         } else {
             // All zones complete - finish training
-            // Audio: Session complete announcement
-            val totalStrokes = state.zones.sumOf { it.strokes * it.sets }
-            audioManager?.playSessionCompleteSound()
-            audioManager?.announceSessionComplete(totalStrokes, spm)
-            broadcastAudioPrompt(BleManager.AUDIO_SESSION_COMPLETE, 100)
+            val summaryEvent = selectSessionSummaryPrompt(_uiState.value.trainingSession, strokeAnalyzer)
+            broadcastAudioPrompt(summaryEvent, 100)
 
             stopTrainingSession()
             session.copy(
@@ -374,6 +357,47 @@ class MainViewModel(
             intensity = intensity,
             includePacer = true  // Include pacer so all devices pulse together
         )
+    }
+
+    private fun selectSessionSummaryPrompt(
+        trainingSession: TrainingSessionState,
+        strokeAnalyzer: StrokeAnalyzer
+    ): Byte {
+        val avgLatencyMs = if (trainingSession.syncQuality.isEmpty()) 300.0
+                           else trainingSession.syncQuality.values.average()
+        val syncScore = ((300.0 - avgLatencyMs) / 250.0 * 100.0).coerceIn(0.0, 100.0).toInt()
+
+        val avgFsrPeak = strokeAnalyzer.sessionAverageFsrPeak()
+
+        val powerEvent: (Byte, Byte, Byte, Byte) -> Byte = { light, moderate, strong, maximum ->
+            when {
+                avgFsrPeak >= 76 -> maximum
+                avgFsrPeak >= 51 -> strong
+                avgFsrPeak >= 26 -> moderate
+                else             -> light
+            }
+        }
+
+        return when {
+            syncScore >= 80 -> powerEvent(
+                BleManager.AUDIO_SUMMARY_EXCELLENT_LIGHT,
+                BleManager.AUDIO_SUMMARY_EXCELLENT_MODERATE,
+                BleManager.AUDIO_SUMMARY_EXCELLENT_STRONG,
+                BleManager.AUDIO_SUMMARY_EXCELLENT_MAXIMUM
+            )
+            syncScore >= 50 -> powerEvent(
+                BleManager.AUDIO_SUMMARY_GOOD_LIGHT,
+                BleManager.AUDIO_SUMMARY_GOOD_MODERATE,
+                BleManager.AUDIO_SUMMARY_GOOD_STRONG,
+                BleManager.AUDIO_SUMMARY_GOOD_MAXIMUM
+            )
+            else -> powerEvent(
+                BleManager.AUDIO_SUMMARY_POOR_LIGHT,
+                BleManager.AUDIO_SUMMARY_POOR_MODERATE,
+                BleManager.AUDIO_SUMMARY_POOR_STRONG,
+                BleManager.AUDIO_SUMMARY_POOR_MAXIMUM
+            )
+        }
     }
 
     private fun broadcastAudioPrompt(audioEvent: Byte, volume: Int = 90) {
@@ -859,7 +883,7 @@ class MainViewModel(
         bleManager?.testHapticPattern(deviceId, pattern)
     }
 
-    fun testAudioBroadcast(audioEvent: Byte = BleManager.AUDIO_TRAINING_START, volume: Int = 90) {
+    fun testAudioBroadcast(audioEvent: Byte = BleManager.AUDIO_SESSION_START_BEEP, volume: Int = 90) {
         Log.d(TAG, "=== TEST AUDIO BROADCAST ===")
         Log.d(TAG, "Audio Event: 0x${String.format("%02X", audioEvent)}, Volume: $volume")
         Log.d(TAG, "Connected devices: ${_uiState.value.devices.filter { it.status == DeviceStatus.Connected }.size}")
@@ -1013,7 +1037,7 @@ class MainViewModel(
 
             // Audio: Training start announcement
             audioManager?.announceTrainingStart(state.zones.size)
-            broadcastAudioPrompt(BleManager.AUDIO_TRAINING_START, 100)
+            broadcastAudioPrompt(BleManager.AUDIO_SESSION_START_BEEP, 100)
         }
     }
 
@@ -1055,7 +1079,6 @@ class MainViewModel(
 
         // Audio: Pause announcement
         audioManager?.announceTrainingPaused()
-        broadcastAudioPrompt(BleManager.AUDIO_PAUSE, 70)
     }
 
     fun resumeTrainingSession() {
@@ -1084,7 +1107,6 @@ class MainViewModel(
 
         // Audio: Resume announcement
         audioManager?.announceTrainingResumed()
-        broadcastAudioPrompt(BleManager.AUDIO_RESUME, 90)
     }
 
     fun stopTrainingSession() {
@@ -1109,6 +1131,9 @@ class MainViewModel(
         // Disable stroke detection on pacer
         val pacer = state.devices.find { it.seat == 1 && it.status == DeviceStatus.Connected }
         pacer?.let { disableStrokeDetection(it.id) }
+
+        // Reset coaching engine so post-session stray events don't trigger feedback
+        coachingEngine.reset()
 
         // Save session data to database
         viewModelScope.launch {
