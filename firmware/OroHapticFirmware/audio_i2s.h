@@ -14,7 +14,7 @@
  * - SD_MODE: Tie HIGH to enable (can use GPIO for power control)
  * - Speaker: 4Ω or 8Ω, 1W max
  *
- * Sample Rate: 16kHz (configurable)
+ * Sample Rate: 32kHz (configurable)
  * Bit Depth: 16-bit per channel
  * Channels: Stereo (mono source in left channel, right channel silent)
  * Alignment: Left-aligned (standard I2S format)
@@ -50,7 +50,7 @@ public:
 
     /**
      * Generate and play a sine wave tone
-     * @param frequency Frequency in Hz (20-8000 recommended for 16kHz sample rate)
+     * @param frequency Frequency in Hz (20-16000 recommended for 32kHz sample rate)
      * @param duration_ms Duration in milliseconds
      * @param volume Volume level (0-100)
      */
