@@ -1105,7 +1105,7 @@ const int16_t test_real_audio_data[] = {
 void playSessionStartBeeps() {
   for (int i = 0; i < 3; i++) {
     audioPlayer.playTone(880, 100, 90);
-    delay(120);  // 20ms gap between beeps
+    delay(120);  // 120ms total gap between beeps
   }
   delay(200);    // Longer pause before go signal
   audioPlayer.playTone(1320, 500, 100);
