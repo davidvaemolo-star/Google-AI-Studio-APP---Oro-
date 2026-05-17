@@ -587,7 +587,7 @@ void loop() {
       Serial.print("  MCKFREQ: 0x"); Serial.print(NRF_I2S->CONFIG.MCKFREQ, HEX);
       Serial.println(" (should be 0x8000000 = 1MHz)");
       Serial.print("  RATIO: "); Serial.print(NRF_I2S->CONFIG.RATIO);
-      Serial.println(" (should be 2 = 64x)");
+      Serial.println(" (should be 1 = 48x)");
       Serial.print("  CHANNELS: ");
       switch(NRF_I2S->CONFIG.CHANNELS) {
         case 0: Serial.println("Stereo (0)"); break;
