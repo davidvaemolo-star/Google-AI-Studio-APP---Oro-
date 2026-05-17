@@ -8,6 +8,7 @@ import com.orotrain.oro.coaching.CoachingEngine
 import com.orotrain.oro.ble.BleManager
 import com.orotrain.oro.data.SessionRepository
 import com.orotrain.oro.model.AppDestination
+import com.orotrain.oro.model.Programme
 import com.orotrain.oro.model.DeviceStatus
 import com.orotrain.oro.model.HapticDevice
 import com.orotrain.oro.model.MAX_SETS
@@ -29,7 +30,8 @@ import kotlinx.coroutines.launch
 class MainViewModel(
     private val bleManager: BleManager? = null,
     private val audioManager: com.orotrain.oro.audio.AudioManager? = null,
-    private val sessionRepository: SessionRepository? = null
+    private val sessionRepository: SessionRepository? = null,
+    private val programmeRepository: com.orotrain.oro.data.ProgrammeRepository? = null
 ) : ViewModel() {
 
     companion object {
@@ -108,6 +110,11 @@ class MainViewModel(
                     coachingEngine.onCoachingEvent(it, deviceIds)
                 }
             }
+        }
+
+        // Load saved programmes on startup
+        programmeRepository?.let { repo ->
+            _uiState.update { it.copy(programmes = repo.loadAll()) }
         }
     }
 
@@ -465,6 +472,169 @@ class MainViewModel(
             val zone = zones.removeAt(fromIndex)
             zones.add(toIndex, zone)
             state.copy(zones = zones)
+        }
+    }
+
+    // ── Programme library ────────────────────────────────────────────────────
+
+    fun createProgramme(name: String) {
+        val programme = Programme(name = name.trim())
+        _uiState.update { state ->
+            state.copy(programmes = state.programmes + programme)
+        }
+        persistProgrammes()
+    }
+
+    fun renameProgramme(id: String, name: String) {
+        _uiState.update { state ->
+            state.copy(
+                programmes = state.programmes.map {
+                    if (it.id == id) it.copy(name = name.trim()) else it
+                },
+                activeProgramme = state.activeProgramme?.let {
+                    if (it.id == id) it.copy(name = name.trim()) else it
+                }
+            )
+        }
+        persistProgrammes()
+    }
+
+    fun deleteProgramme(id: String) {
+        _uiState.update { state ->
+            val isActive = state.activeProgramme?.id == id
+            state.copy(
+                programmes = state.programmes.filterNot { it.id == id },
+                activeProgramme = if (isActive) null else state.activeProgramme,
+                zones = if (isActive) emptyList() else state.zones,
+                editingProgrammeId = if (state.editingProgrammeId == id) null else state.editingProgrammeId
+            )
+        }
+        persistProgrammes()
+    }
+
+    fun duplicateProgramme(id: String) {
+        _uiState.update { state ->
+            val source = state.programmes.find { it.id == id } ?: return@update state
+            val copy = source.copy(
+                id = java.util.UUID.randomUUID().toString(),
+                name = "${source.name} (copy)",
+                zones = source.zones.map { it.copy(id = java.util.UUID.randomUUID().toString()) }
+            )
+            val index = state.programmes.indexOfFirst { it.id == id }
+            val updated = state.programmes.toMutableList().also { it.add(index + 1, copy) }
+            state.copy(programmes = updated)
+        }
+        persistProgrammes()
+    }
+
+    fun loadProgramme(id: String) {
+        _uiState.update { state ->
+            val programme = state.programmes.find { it.id == id } ?: return@update state
+            state.copy(
+                activeProgramme = programme,
+                zones = programme.zones.map { it.copy() },
+                destination = AppDestination.Training
+            )
+        }
+    }
+
+    fun openProgrammeEditor(id: String) {
+        _uiState.update { it.copy(editingProgrammeId = id, destination = AppDestination.Programmes) }
+    }
+
+    fun closeProgrammeEditor() {
+        _uiState.update { it.copy(editingProgrammeId = null) }
+    }
+
+    fun addZoneToEditingProgramme() {
+        _uiState.update { state ->
+            val id = state.editingProgrammeId ?: return@update state
+            val programme = state.programmes.find { it.id == id } ?: return@update state
+            if (programme.zones.size >= MAX_ZONES) return@update state
+            val updated = programme.copy(zones = programme.zones + Zone())
+            state.copy(programmes = state.programmes.map { if (it.id == id) updated else it })
+        }
+        persistProgrammes()
+    }
+
+    fun addZoneAfterInProgramme(zoneId: String) {
+        _uiState.update { state ->
+            val programmeId = state.editingProgrammeId ?: return@update state
+            val programme = state.programmes.find { it.id == programmeId } ?: return@update state
+            if (programme.zones.size >= MAX_ZONES) return@update state
+            val index = programme.zones.indexOfFirst { it.id == zoneId }
+            if (index == -1) return@update state
+            val zones = programme.zones.toMutableList().also { it.add(index + 1, Zone()) }
+            val updated = programme.copy(zones = zones)
+            state.copy(programmes = state.programmes.map { if (it.id == programmeId) updated else it })
+        }
+        persistProgrammes()
+    }
+
+    fun duplicateZoneInProgramme(zoneId: String) {
+        _uiState.update { state ->
+            val programmeId = state.editingProgrammeId ?: return@update state
+            val programme = state.programmes.find { it.id == programmeId } ?: return@update state
+            if (programme.zones.size >= MAX_ZONES) return@update state
+            val index = programme.zones.indexOfFirst { it.id == zoneId }
+            if (index == -1) return@update state
+            val copy = programme.zones[index].copy(id = java.util.UUID.randomUUID().toString())
+            val zones = programme.zones.toMutableList().also { it.add(index + 1, copy) }
+            val updated = programme.copy(zones = zones)
+            state.copy(programmes = state.programmes.map { if (it.id == programmeId) updated else it })
+        }
+        persistProgrammes()
+    }
+
+    fun removeZoneFromProgramme(zoneId: String) {
+        _uiState.update { state ->
+            val programmeId = state.editingProgrammeId ?: return@update state
+            val programme = state.programmes.find { it.id == programmeId } ?: return@update state
+            val updated = programme.copy(zones = programme.zones.filterNot { it.id == zoneId })
+            state.copy(programmes = state.programmes.map { if (it.id == programmeId) updated else it })
+        }
+        persistProgrammes()
+    }
+
+    fun adjustZoneInProgramme(zoneId: String, field: ZoneField, delta: Int) {
+        _uiState.update { state ->
+            val programmeId = state.editingProgrammeId ?: return@update state
+            val programme = state.programmes.find { it.id == programmeId } ?: return@update state
+            val zones = programme.zones.map { zone ->
+                if (zone.id != zoneId) return@map zone
+                when (field) {
+                    ZoneField.Strokes -> zone.copy(strokes = (zone.strokes + delta).coerceIn(MIN_VALUE, MAX_STROKES))
+                    ZoneField.Sets -> zone.copy(sets = (zone.sets + delta).coerceIn(MIN_VALUE, MAX_SETS))
+                    ZoneField.Level -> {
+                        val levels = com.orotrain.oro.model.ZoneLevel.values()
+                        val newIndex = (levels.indexOf(zone.level) + delta).coerceIn(0, levels.size - 1)
+                        zone.copy(level = levels[newIndex])
+                    }
+                }
+            }
+            val updated = programme.copy(zones = zones)
+            state.copy(programmes = state.programmes.map { if (it.id == programmeId) updated else it })
+        }
+        persistProgrammes()
+    }
+
+    fun reorderZonesInProgramme(fromIndex: Int, toIndex: Int) {
+        if (fromIndex == toIndex) return
+        _uiState.update { state ->
+            val programmeId = state.editingProgrammeId ?: return@update state
+            val programme = state.programmes.find { it.id == programmeId } ?: return@update state
+            if (fromIndex !in programme.zones.indices || toIndex !in programme.zones.indices) return@update state
+            val zones = programme.zones.toMutableList()
+            zones.add(toIndex, zones.removeAt(fromIndex))
+            val updated = programme.copy(zones = zones)
+            state.copy(programmes = state.programmes.map { if (it.id == programmeId) updated else it })
+        }
+        persistProgrammes()
+    }
+
+    private fun persistProgrammes() {
+        viewModelScope.launch {
+            programmeRepository?.saveAll(_uiState.value.programmes)
         }
     }
 
