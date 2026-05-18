@@ -400,8 +400,9 @@ bool initializeDRV2605L() {
     return false;
   }
 
-  // Configure for ERM motor
-  drv.selectLibrary(1);  // ERM library
+  // Configure for LRA motor
+  drv.useLRA();
+  drv.selectLibrary(6);  // LRA library
   drv.setMode(DRV2605_MODE_INTTRIG);  // Internal trigger mode
 
   Serial.println("DRV2605L initialized successfully");
@@ -1087,18 +1088,6 @@ void testHapticPattern(uint8_t pattern, uint8_t intensity) {
 // AUDIO CONTROL (I2S Audio Playback)
 // ============================================================================
 
-// TEST: Small embedded audio sample to verify flash reading works
-const int16_t test_audio_sample[] = {
-  0, 100, 200, 300, 400, 500, 600, 700, 800, 900,
-  1000, 2000, 3000, 4000, 5000, -1000, -2000, -3000
-};
-
-// TEST: Copy of REAL audio data from audio_prompts.h (sample [2000] area)
-const int16_t test_real_audio_data[] = {
-  6099, 6769, 6354, 5788, 4935, 3613, 1629, -587, -1916, -2478, -2390, -1747,
-  -603, 1095, 3238, 5385, 6834, 7421, 6720, 5613, 4002, 2212, 1119, 291
-};
-
 // Play audio event based on type (VOICE PROMPTS)
 // Play 3 short beeps (880Hz, 100ms) + 1 long go-beep (1320Hz, 500ms)
 // Modelled on F1-style countdown lights: preparation beats then a distinct go signal.
@@ -1116,26 +1105,18 @@ void playSetChangeover() {
   audioPlayer.playTone(660, 80, 80);
 }
 
+void playSummaryTone() {
+  audioPlayer.playTone(523, 150, 85);
+  delay(50);
+  audioPlayer.playTone(659, 150, 85);
+  delay(50);
+  audioPlayer.playTone(784, 300, 90);
+}
+
 void playAudioEvent(uint8_t audioEvent, uint8_t volume) {
   Serial.print("Audio event: 0x");
   Serial.print(audioEvent, HEX);
   Serial.print(" (");
-
-  // TEST: Read embedded test sample
-  Serial.print("\nTEST SAMPLE: ");
-  for (int i = 0; i < 10; i++) {
-    Serial.print(test_audio_sample[i]);
-    Serial.print(" ");
-  }
-  Serial.println();
-
-  // TEST: Read real audio data test array (should match audio_prompts.h)
-  Serial.print("TEST REAL AUDIO: ");
-  for (int i = 0; i < 12; i++) {
-    Serial.print(test_real_audio_data[i]);
-    Serial.print(" ");
-  }
-  Serial.println();
 
   // Select audio buffer and size based on event
   const int16_t* audioData = nullptr;
@@ -1183,53 +1164,20 @@ void playAudioEvent(uint8_t audioEvent, uint8_t volume) {
       break;
 
     case AUDIO_SUMMARY_POOR_LIGHT:
-      audioData = audio_prompt_summary_poor_light;
-      audioSize = audio_prompt_summary_poor_light_SIZE;
-      break;
     case AUDIO_SUMMARY_POOR_MODERATE:
-      audioData = audio_prompt_summary_poor_moderate;
-      audioSize = audio_prompt_summary_poor_moderate_SIZE;
-      break;
     case AUDIO_SUMMARY_POOR_STRONG:
-      audioData = audio_prompt_summary_poor_strong;
-      audioSize = audio_prompt_summary_poor_strong_SIZE;
-      break;
     case AUDIO_SUMMARY_POOR_MAXIMUM:
-      audioData = audio_prompt_summary_poor_maximum;
-      audioSize = audio_prompt_summary_poor_maximum_SIZE;
-      break;
     case AUDIO_SUMMARY_GOOD_LIGHT:
-      audioData = audio_prompt_summary_good_light;
-      audioSize = audio_prompt_summary_good_light_SIZE;
-      break;
     case AUDIO_SUMMARY_GOOD_MODERATE:
-      audioData = audio_prompt_summary_good_moderate;
-      audioSize = audio_prompt_summary_good_moderate_SIZE;
-      break;
     case AUDIO_SUMMARY_GOOD_STRONG:
-      audioData = audio_prompt_summary_good_strong;
-      audioSize = audio_prompt_summary_good_strong_SIZE;
-      break;
     case AUDIO_SUMMARY_GOOD_MAXIMUM:
-      audioData = audio_prompt_summary_good_maximum;
-      audioSize = audio_prompt_summary_good_maximum_SIZE;
-      break;
     case AUDIO_SUMMARY_EXCELLENT_LIGHT:
-      audioData = audio_prompt_summary_excellent_light;
-      audioSize = audio_prompt_summary_excellent_light_SIZE;
-      break;
     case AUDIO_SUMMARY_EXCELLENT_MODERATE:
-      audioData = audio_prompt_summary_excellent_moderate;
-      audioSize = audio_prompt_summary_excellent_moderate_SIZE;
-      break;
     case AUDIO_SUMMARY_EXCELLENT_STRONG:
-      audioData = audio_prompt_summary_excellent_strong;
-      audioSize = audio_prompt_summary_excellent_strong_SIZE;
-      break;
     case AUDIO_SUMMARY_EXCELLENT_MAXIMUM:
-      audioData = audio_prompt_summary_excellent_maximum;
-      audioSize = audio_prompt_summary_excellent_maximum_SIZE;
-      break;
+      Serial.println("Playing: session summary tone");
+      playSummaryTone();
+      return;
 
     default:
       Serial.println("Unknown audio event ID");
