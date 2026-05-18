@@ -66,8 +66,8 @@ data class HapticDevice(
     val calibrationMaxAccel: Float = 0f,
     val calibrationMinAccel: Float = 0f,
     val isCalibrationComplete: Boolean = false,
-    val fsrForcePercent: Int = 0,
-    val fsrThresholdTriggered: Boolean = false
+    val topHandPressurePercent: Int = 0,
+    val topHandPressureThresholdTriggered: Boolean = false
 )
 
 enum class AppDestination {

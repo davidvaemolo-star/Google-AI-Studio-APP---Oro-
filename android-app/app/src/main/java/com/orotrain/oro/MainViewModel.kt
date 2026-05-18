@@ -67,8 +67,8 @@ class MainViewModel(
                                 strokeThreshold = existing?.strokeThreshold ?: device.strokeThreshold,
                                 strokeCount = existing?.strokeCount ?: device.strokeCount,
                                 lastStrokePhase = existing?.lastStrokePhase ?: device.lastStrokePhase,
-                                fsrForcePercent = existing?.fsrForcePercent ?: device.fsrForcePercent,
-                                fsrThresholdTriggered = existing?.fsrThresholdTriggered ?: device.fsrThresholdTriggered
+                                topHandPressurePercent = existing?.topHandPressurePercent ?: device.topHandPressurePercent,
+                                topHandPressureThresholdTriggered = existing?.topHandPressureThresholdTriggered ?: device.topHandPressureThresholdTriggered
                             )
                         }
                         state.copy(devices = renumberSeats(mergedDevices))
@@ -250,8 +250,8 @@ class MainViewModel(
             val updatedDevices = state.devices.map { device ->
                 if (device.id == update.deviceId) {
                     device.copy(
-                        fsrForcePercent = update.forcePercent,
-                        fsrThresholdTriggered = update.thresholdTriggered
+                        topHandPressurePercent = update.forcePercent,
+                        topHandPressureThresholdTriggered = update.topHandPressureThresholdTriggered
                     )
                 } else {
                     device
