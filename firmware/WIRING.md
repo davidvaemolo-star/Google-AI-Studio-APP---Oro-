@@ -5,7 +5,7 @@
 ### Required Components
 - **Microcontroller:** Seeed XIAO nRF52840 Sense
 - **Haptic Driver:** Adafruit DRV2605L Breakout Board
-- **Motor:** ERM Coin Vibration Motor (3.3V, ~70mA)
+- **Motor:** LRA (Linear Resonant Actuator) Motor
 - **Battery:** 3.7V LiPo Battery (recommended: 500-1000mAh)
 - **Connector:** JST PH 2.0mm connector (for battery)
 
@@ -96,9 +96,9 @@
      │         │  ┌───────────────┘
      │         │  │
      │         │  │   ┌─────────────────┐
-     │         │  └─→ │ ERM Motor (Red) │
+     │         │  └─→ │ LRA Motor (Red) │
      │         │      │                 │
-     │         └────→ │ ERM Motor (Blk) │
+     │         └────→ │ LRA Motor (Blk) │
      │                └─────────────────┘
      │
     GND (Common Ground)
@@ -145,14 +145,11 @@
 ### Step 3: Motor Selection
 
 **Recommended Motor Specifications:**
-- Type: ERM (Eccentric Rotating Mass) coin vibration motor
-- Voltage: 3.3V or 3V rated
-- Current: 60-80mA typical
-- Diameter: 8-12mm
-- Examples:
-  - Adafruit Product #1201 (8mm pancake motor)
-  - Precision Microdrives 308-100
-  - Similar motors from Pololu, SparkFun
+- Type: LRA (Linear Resonant Actuator)
+- Voltage: 3.3V supply via DRV2605L
+- Current: 40-60mA typical (lower than ERM)
+- Note: DRV2605L must be configured in LRA mode (firmware default)
+- LRA motors require correct resonant frequency setting in firmware — do not substitute an ERM motor without reconfiguring the driver
 
 **Motor Mounting:**
 - Secure motor to prevent movement during vibration

@@ -22,8 +22,12 @@ _Avoid_: stroke count (ambiguous — see Stroke Event)
 The effort level of a zone: Low, Medium, or High.
 _Avoid_: zone color, zone level, zone name, Recovery, Endurance, Tempo, Threshold, VO2 Max, Anaerobic
 
+**Programme**:
+A named, reusable ordered list of zones designed by a coach. Created in the Configuration Planner and applied to one or more Sessions. Exists independently of any live session.
+_Avoid_: workout plan, training plan, schedule
+
 **Session**:
-A complete training run through all configured zones in order.
+A complete training run through all zones in a Programme, in order.
 _Avoid_: workout, training run
 
 **SPM**:
@@ -116,7 +120,7 @@ _Avoid_: results, stats, report
 ### Tools
 
 **Configuration Planner**:
-The web UI. Used offline to design training programmes (zones, sets, strokes, intensity). Has no BLE connection and no live session capability.
+The web UI. Post-MVP tool for designing programmes on a laptop. Not used in MVP — programme creation happens in the Training Controller.
 _Avoid_: web app, frontend, dashboard
 
 **Training Controller**:
@@ -125,7 +129,8 @@ _Avoid_: Android app, mobile app
 
 ## Relationships
 
-- A **Session** contains one or more **Zones** in order
+- A **Programme** is a named ordered list of one or more **Zones**, created in the **Configuration Planner**
+- A **Session** runs through the **Zones** of a **Programme** in order
 - A **Zone** has one **Intensity** (Low, Medium, or High)
 - A **Zone** runs for N **Sets**, each of N **Strokes**
 - A **Device** occupies exactly one **Seat** within one **Canoe**; its identity is **Canoe + Seat**
@@ -155,18 +160,13 @@ _Avoid_: Android app, mobile app
 
 - **Sync Score thresholds**: The 50ms (perfect) and 300ms (zero) latency bounds are placeholders. They have not been validated against biomechanical perception thresholds or real BLE round-trip measurements. To be revisited with field data.
 
-- **Zone programme transfer**: How a coach moves a programme from the Configuration Planner to the Training Controller is not yet designed. The two tools are currently disconnected. Options include export/import (JSON file, QR code) or a shared cloud store — no decision made.
- How a coach moves a programme from the Configuration Planner to the Training Controller is not yet designed. The two tools are currently disconnected. Options include export/import (JSON file, QR code) or a shared cloud store — no decision made.
+- **Zone programme transfer**: Resolved for MVP — programmes are created and managed directly in the Training Controller. No transfer mechanism needed at this stage.
 
 ## Known constraints to resolve
 
 - **Firmware 6-device limit**: firmware and Android BLE code currently caps at 6 simultaneous connections. Two OC6 canoes requires 12. This limit must be lifted.
 - **Seat 1 = Pacer assumption**: current Android code hardcodes seat 1 as the Pacer. With two canoes, the Pacer is coach-designated — this assumption must be removed.
 
-## Doc debt
-
-- `WIRING.md` specifies an ERM coin vibration motor — incorrect. The actual hardware is an LRA motor. The firmware is correct (DRV2605L configured in LRA mode); the wiring doc needs updating.
-- `BLE_PROTOCOL.md` is out of date: missing characteristics 0005–0009 (Stroke Event, Calibration, Audio Control, FSR Data, LED Control) and describes a 5-byte Device Status frame when firmware sends 6 bytes.
 
 ## Flagged ambiguities
 
