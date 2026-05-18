@@ -153,25 +153,13 @@ _Avoid_: Android app, mobile app
 ## Open questions
 
 - **Sync Rating boundaries**: Poor/Good/Excellent split at 50/80 are placeholders — to be validated against field data.
-
 - **Power Range boundaries**: Light/Moderate/Strong/Maximum split at 25%/50%/75% are placeholders — to be validated against field data.
-
-- **FSR (top hand pressure sensor)**: Hardware is wired and BLE characteristic exists, but FSR data is not yet used in training logic. Planned as (1) a secondary Catch detection signal and (2) a stroke quality metric.
-
-- **Sync Score thresholds**: The 50ms (perfect) and 300ms (zero) latency bounds are placeholders. They have not been validated against biomechanical perception thresholds or real BLE round-trip measurements. To be revisited with field data.
-
-- **Zone programme transfer**: Resolved for MVP — programmes are created and managed directly in the Training Controller. No transfer mechanism needed at this stage.
+- **Sync Score thresholds**: The 50ms (perfect) and 300ms (zero) latency bounds are placeholders — not validated against biomechanical perception thresholds or real BLE round-trip measurements.
+- **FSR in training logic**: Hardware is wired and characteristic 0008 streams data, but FSR is not yet used in training logic. Planned: (1) secondary Catch detection confirmation, (2) stroke quality metric feeding Power Range.
 
 ## Known constraints to resolve
 
-- **Firmware 6-device limit**: firmware and Android BLE code currently caps at 6 simultaneous connections. Two OC6 canoes requires 12. This limit must be lifted.
-- **Seat 1 = Pacer assumption**: current Android code hardcodes seat 1 as the Pacer. With two canoes, the Pacer is coach-designated — this assumption must be removed.
-
-
-## Flagged ambiguities
-
-- **"grip force" / "fsrForcePercent"**: Android model fields and firmware use "grip force" — resolved: canonical term is **Top Hand Pressure**. Fields should be renamed `topHandPressurePercent` / `topHandPressureThresholdTriggered`.
-
-- **"Stroke"** was used for both the training unit (strokes per set) and physical IMU-detected motion — resolved: use **Strokes** for the training unit, **Stroke Event** for the BLE/IMU concept.
-- **Zone intensity naming**: BLE wire formerly used 6 physiological zone names (Recovery, Endurance, Tempo, Threshold, VO2 Max, Anaerobic) — resolved: canonical domain vocabulary is **Low / Medium / High**. Physiological names are retired from code; bytes 0x04–0x06 are reserved and unused.
-- **"Recovery"** appeared as both a stroke phase and a zone intensity name — resolved: Recovery (capitalised) is always the stroke phase; Low intensity replaces the zone name.
+- **Firmware 6-device limit**: firmware and Android BLE code caps at 6 simultaneous connections. Two OC6 canoes requires 12. This limit must be lifted.
+- **Seat 1 = Pacer assumption**: Android code hardcodes seat 1 as the Pacer. Must become coach-designated.
+- **Android field naming**: `fsrForcePercent` / `gripForce` fields should be renamed `topHandPressurePercent` / `topHandPressureThresholdTriggered` to match canonical vocabulary.
+- **Firmware zone intensity**: `handleStrokeDetection()` switch still maps zone bytes 0x01–0x06 to haptic patterns; bytes 0x04–0x06 should be dead code per the resolved spec (Low/Medium/High only).
