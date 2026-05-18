@@ -1614,15 +1614,6 @@ void handleStrokeDetection() {
           case 0x03:
             pattern = PATTERN_DOUBLE_CLICK;
             break;
-          case 0x04:
-            pattern = PATTERN_TRIPLE_CLICK;
-            break;
-          case 0x05:
-            pattern = PATTERN_ALERT_750MS;
-            break;
-          case 0x06:
-            pattern = PATTERN_TRANSITION;
-            break;
         }
         playHapticEffect(pattern, 100);
 

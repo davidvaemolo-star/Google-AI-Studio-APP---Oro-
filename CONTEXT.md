@@ -161,5 +161,3 @@ _Avoid_: Android app, mobile app
 
 - **Firmware 6-device limit**: firmware and Android BLE code caps at 6 simultaneous connections. Two OC6 canoes requires 12. This limit must be lifted.
 - **Seat 1 = Pacer assumption**: Android code hardcodes seat 1 as the Pacer. Must become coach-designated.
-- **Android field naming**: `fsrForcePercent` / `gripForce` fields should be renamed `topHandPressurePercent` / `topHandPressureThresholdTriggered` to match canonical vocabulary.
-- **Firmware zone intensity**: `handleStrokeDetection()` switch still maps zone bytes 0x01–0x06 to haptic patterns; bytes 0x04–0x06 should be dead code per the resolved spec (Low/Medium/High only).

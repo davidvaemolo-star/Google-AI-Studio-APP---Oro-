@@ -149,15 +149,15 @@ fun DeviceCard(
                 }
 
                 // FSR force bar
-                if (device.fsrForcePercent > 0) {
+                if (device.topHandPressurePercent > 0) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         Text(
-                            text = "Force: ${device.fsrForcePercent}%",
+                            text = "Force: ${device.topHandPressurePercent}%",
                             style = MaterialTheme.typography.bodySmall,
-                            color = if (device.fsrThresholdTriggered) Color(0xFFFF6E6E) else Color(0xFF3ADE8A),
+                            color = if (device.topHandPressureThresholdTriggered) Color(0xFFFF6E6E) else Color(0xFF3ADE8A),
                             fontWeight = FontWeight.SemiBold
                         )
                     }
@@ -170,11 +170,11 @@ fun DeviceCard(
                     ) {
                         Box(
                             modifier = Modifier
-                                .fillMaxWidth(device.fsrForcePercent / 100f)
+                                .fillMaxWidth(device.topHandPressurePercent / 100f)
                                 .height(6.dp)
                                 .clip(RoundedCornerShape(3.dp))
                                 .background(
-                                    if (device.fsrThresholdTriggered) Color(0xFFFF6E6E) else Color(0xFF3ADE8A)
+                                    if (device.topHandPressureThresholdTriggered) Color(0xFFFF6E6E) else Color(0xFF3ADE8A)
                                 )
                         )
                     }

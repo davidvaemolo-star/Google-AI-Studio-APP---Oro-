@@ -172,7 +172,7 @@ class BleManager(private val context: Context) {
         val peakAccel: Float = 0f,        // Peak acceleration during this stroke (g)
         val minAccel: Float = 0f,         // Min acceleration during recovery (g)
         val phaseDurationMs: Int = 0,     // Duration of current phase (ms)
-        val fsrForcePercent: Int = 0,     // FSR reading at this moment (0-100)
+        val topHandPressurePercent: Int = 0,     // FSR reading at this moment (0-100)
         val strokeFlags: Int = 0          // Bit flags: bit0=fsr_threshold_triggered
     )
 
@@ -196,7 +196,7 @@ class BleManager(private val context: Context) {
     private val _calibrationUpdates = MutableStateFlow<CalibrationUpdate?>(null)
     val calibrationUpdates: StateFlow<CalibrationUpdate?> = _calibrationUpdates.asStateFlow()
 
-    data class FsrUpdate(val deviceId: String, val forcePercent: Int, val rawAdc: Int, val thresholdTriggered: Boolean)
+    data class FsrUpdate(val deviceId: String, val forcePercent: Int, val rawAdc: Int, val topHandPressureThresholdTriggered: Boolean)
     private val _fsrUpdates = MutableStateFlow<FsrUpdate?>(null)
     val fsrUpdates: StateFlow<FsrUpdate?> = _fsrUpdates.asStateFlow()
 
@@ -718,7 +718,7 @@ class BleManager(private val context: Context) {
                 val phaseDurationMs = if (value.size >= 16) {
                     (value[11].toInt() and 0xFF) or ((value[12].toInt() and 0xFF) shl 8)
                 } else 0
-                val fsrForcePercent = if (value.size >= 16) value[13].toInt() and 0xFF else 0
+                val topHandPressurePercent = if (value.size >= 16) value[13].toInt() and 0xFF else 0
                 val strokeFlags = if (value.size >= 16) value[14].toInt() and 0xFF else 0
 
                 val strokeEvent = StrokeEvent(
@@ -729,14 +729,14 @@ class BleManager(private val context: Context) {
                     peakAccel = peakAccel,
                     minAccel = minAccel,
                     phaseDurationMs = phaseDurationMs,
-                    fsrForcePercent = fsrForcePercent,
+                    topHandPressurePercent = topHandPressurePercent,
                     strokeFlags = strokeFlags
                 )
 
                 _strokeEvents.value = strokeEvent
 
                 Log.d(TAG, "Stroke event from ${gatt.device.address}: phase=$phase, accel=$accelMagnitude, " +
-                    "peak=$peakAccel, min=$minAccel, phaseDur=${phaseDurationMs}ms, fsr=$fsrForcePercent%")
+                    "peak=$peakAccel, min=$minAccel, phaseDur=${phaseDurationMs}ms, fsr=$topHandPressurePercent%")
 
             }
             DEVICE_STATUS_UUID -> {
@@ -770,16 +770,16 @@ class BleManager(private val context: Context) {
                 if (value.size >= 4) {
                     val forcePercent = value[0].toInt() and 0xFF
                     val rawAdc = ((value[2].toInt() and 0xFF) shl 8) or (value[1].toInt() and 0xFF)
-                    val thresholdTriggered = value[3].toInt() != 0
+                    val topHandPressureThresholdTriggered = value[3].toInt() != 0
 
                     _fsrUpdates.value = FsrUpdate(
                         deviceId = gatt.device.address,
                         forcePercent = forcePercent,
                         rawAdc = rawAdc,
-                        thresholdTriggered = thresholdTriggered
+                        topHandPressureThresholdTriggered = topHandPressureThresholdTriggered
                     )
 
-                    Log.d(TAG, "FSR data from ${gatt.device.address}: force=$forcePercent%, rawAdc=$rawAdc, threshold=$thresholdTriggered")
+                    Log.d(TAG, "FSR data from ${gatt.device.address}: force=$forcePercent%, rawAdc=$rawAdc, threshold=$topHandPressureThresholdTriggered")
                 }
             }
             CALIBRATION_UUID -> {
