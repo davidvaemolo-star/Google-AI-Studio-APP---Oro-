@@ -189,14 +189,30 @@ enum HapticPattern {
 
 // Audio Events
 enum AudioEvent {
-  AUDIO_TRAINING_START = 0x01,    // Training session start beep
-  AUDIO_HALFWAY = 0x02,           // Halfway point chime
-  AUDIO_SET_COMPLETE = 0x03,      // Set complete tone
-  AUDIO_LAST_SET = 0x04,          // Last set alert
-  AUDIO_ZONE_TRANSITION = 0x05,   // Zone transition sound
-  AUDIO_SESSION_COMPLETE = 0x06,  // Session complete fanfare
-  AUDIO_PAUSE = 0x07,             // Pause beep
-  AUDIO_RESUME = 0x08             // Resume beep
+  // Tones (firmware-generated, no pre-recorded audio)
+  AUDIO_POWER_ON            = 0x01,  // "Oro" voice on boot
+  AUDIO_SESSION_START_BEEP  = 0x02,  // 3 short + 1 long go-beep
+  AUDIO_SET_CHANGEOVER_BEEP = 0x03,  // Single beep: set complete
+
+  // Zone voice prompts
+  AUDIO_LAST_SET            = 0x04,  // "last set" — final zone's last set
+  AUDIO_NEXT_SET_LOW        = 0x05,  // "next set low"
+  AUDIO_NEXT_SET_MEDIUM     = 0x06,  // "next set medium"
+  AUDIO_NEXT_SET_HIGH       = 0x07,  // "next set high"
+
+  // Session summary voice prompts (Sync Rating × Power Range)
+  AUDIO_SUMMARY_POOR_LIGHT      = 0x08,
+  AUDIO_SUMMARY_POOR_MODERATE   = 0x09,
+  AUDIO_SUMMARY_POOR_STRONG     = 0x0A,
+  AUDIO_SUMMARY_POOR_MAXIMUM    = 0x0B,
+  AUDIO_SUMMARY_GOOD_LIGHT      = 0x0C,
+  AUDIO_SUMMARY_GOOD_MODERATE   = 0x0D,
+  AUDIO_SUMMARY_GOOD_STRONG     = 0x0E,
+  AUDIO_SUMMARY_GOOD_MAXIMUM    = 0x0F,
+  AUDIO_SUMMARY_EXCELLENT_LIGHT     = 0x10,
+  AUDIO_SUMMARY_EXCELLENT_MODERATE  = 0x11,
+  AUDIO_SUMMARY_EXCELLENT_STRONG    = 0x12,
+  AUDIO_SUMMARY_EXCELLENT_MAXIMUM   = 0x13
 };
 
 // Training Configuration
@@ -571,7 +587,7 @@ void loop() {
       Serial.print("  MCKFREQ: 0x"); Serial.print(NRF_I2S->CONFIG.MCKFREQ, HEX);
       Serial.println(" (should be 0x8000000 = 1MHz)");
       Serial.print("  RATIO: "); Serial.print(NRF_I2S->CONFIG.RATIO);
-      Serial.println(" (should be 2 = 64x)");
+      Serial.println(" (should be 1 = 48x)");
       Serial.print("  CHANNELS: ");
       switch(NRF_I2S->CONFIG.CHANNELS) {
         case 0: Serial.println("Stereo (0)"); break;
@@ -1030,6 +1046,7 @@ void stopTraining() {
   trainingState.currentStroke = 0;
   trainingState.currentSet = 0;
   trainingConfig.isActive = false;
+  strokeDetection.enabled = false;
 
   playHapticEffect(PATTERN_SOFT_CLICK, 60);
   updateDeviceStatus();
@@ -1083,6 +1100,22 @@ const int16_t test_real_audio_data[] = {
 };
 
 // Play audio event based on type (VOICE PROMPTS)
+// Play 3 short beeps (880Hz, 100ms) + 1 long go-beep (1320Hz, 500ms)
+// Modelled on F1-style countdown lights: preparation beats then a distinct go signal.
+void playSessionStartBeeps() {
+  for (int i = 0; i < 3; i++) {
+    audioPlayer.playTone(880, 100, 90);
+    delay(120);  // 120ms total gap between beeps
+  }
+  delay(200);    // Longer pause before go signal
+  audioPlayer.playTone(1320, 500, 100);
+}
+
+// Single short beep signals a set has completed and the next begins.
+void playSetChangeover() {
+  audioPlayer.playTone(660, 80, 80);
+}
+
 void playAudioEvent(uint8_t audioEvent, uint8_t volume) {
   Serial.print("Audio event: 0x");
   Serial.print(audioEvent, HEX);
@@ -1109,49 +1142,97 @@ void playAudioEvent(uint8_t audioEvent, uint8_t volume) {
   uint32_t audioSize = 0;
 
   switch (audioEvent) {
-    case AUDIO_TRAINING_START:
-      Serial.print("Training Start");
-      audioData = audio_prompt_training_start;
-      audioSize = audio_prompt_training_start_SIZE;
+    case AUDIO_SESSION_START_BEEP:
+      Serial.println("Playing: session start beeps");
+      playSessionStartBeeps();
+      return;
+
+    case AUDIO_SET_CHANGEOVER_BEEP:
+      Serial.println("Playing: set changeover beep");
+      playSetChangeover();
+      return;
+
+    case AUDIO_POWER_ON:
+      Serial.println("Playing: power on (Oro)");
+      audioData = audio_prompt_power_on;
+      audioSize = audio_prompt_power_on_SIZE;
       break;
-    case AUDIO_HALFWAY:
-      Serial.print("Halfway");
-      audioData = audio_prompt_halfway;
-      audioSize = audio_prompt_halfway_SIZE;
-      break;
-    case AUDIO_SET_COMPLETE:
-      Serial.print("Set Complete");
-      audioData = audio_prompt_set_complete;
-      audioSize = audio_prompt_set_complete_SIZE;
-      break;
+
     case AUDIO_LAST_SET:
-      Serial.print("Last Set");
+      Serial.println("Playing: last set");
       audioData = audio_prompt_last_set;
       audioSize = audio_prompt_last_set_SIZE;
       break;
-    case AUDIO_ZONE_TRANSITION:
-      Serial.print("Zone Transition");
-      audioData = audio_prompt_zone_transition;
-      audioSize = audio_prompt_zone_transition_SIZE;
+
+    case AUDIO_NEXT_SET_LOW:
+      Serial.println("Playing: next set low");
+      audioData = audio_prompt_next_set_low;
+      audioSize = audio_prompt_next_set_low_SIZE;
       break;
-    case AUDIO_SESSION_COMPLETE:
-      Serial.print("Session Complete");
-      audioData = audio_prompt_session_complete;
-      audioSize = audio_prompt_session_complete_SIZE;
+
+    case AUDIO_NEXT_SET_MEDIUM:
+      Serial.println("Playing: next set medium");
+      audioData = audio_prompt_next_set_medium;
+      audioSize = audio_prompt_next_set_medium_SIZE;
       break;
-    case AUDIO_PAUSE:
-      Serial.print("Pause");
-      audioData = audio_prompt_pause;
-      audioSize = audio_prompt_pause_SIZE;
+
+    case AUDIO_NEXT_SET_HIGH:
+      Serial.println("Playing: next set high");
+      audioData = audio_prompt_next_set_high;
+      audioSize = audio_prompt_next_set_high_SIZE;
       break;
-    case AUDIO_RESUME:
-      Serial.print("Resume");
-      audioData = audio_prompt_resume;
-      audioSize = audio_prompt_resume_SIZE;
+
+    case AUDIO_SUMMARY_POOR_LIGHT:
+      audioData = audio_prompt_summary_poor_light;
+      audioSize = audio_prompt_summary_poor_light_SIZE;
       break;
+    case AUDIO_SUMMARY_POOR_MODERATE:
+      audioData = audio_prompt_summary_poor_moderate;
+      audioSize = audio_prompt_summary_poor_moderate_SIZE;
+      break;
+    case AUDIO_SUMMARY_POOR_STRONG:
+      audioData = audio_prompt_summary_poor_strong;
+      audioSize = audio_prompt_summary_poor_strong_SIZE;
+      break;
+    case AUDIO_SUMMARY_POOR_MAXIMUM:
+      audioData = audio_prompt_summary_poor_maximum;
+      audioSize = audio_prompt_summary_poor_maximum_SIZE;
+      break;
+    case AUDIO_SUMMARY_GOOD_LIGHT:
+      audioData = audio_prompt_summary_good_light;
+      audioSize = audio_prompt_summary_good_light_SIZE;
+      break;
+    case AUDIO_SUMMARY_GOOD_MODERATE:
+      audioData = audio_prompt_summary_good_moderate;
+      audioSize = audio_prompt_summary_good_moderate_SIZE;
+      break;
+    case AUDIO_SUMMARY_GOOD_STRONG:
+      audioData = audio_prompt_summary_good_strong;
+      audioSize = audio_prompt_summary_good_strong_SIZE;
+      break;
+    case AUDIO_SUMMARY_GOOD_MAXIMUM:
+      audioData = audio_prompt_summary_good_maximum;
+      audioSize = audio_prompt_summary_good_maximum_SIZE;
+      break;
+    case AUDIO_SUMMARY_EXCELLENT_LIGHT:
+      audioData = audio_prompt_summary_excellent_light;
+      audioSize = audio_prompt_summary_excellent_light_SIZE;
+      break;
+    case AUDIO_SUMMARY_EXCELLENT_MODERATE:
+      audioData = audio_prompt_summary_excellent_moderate;
+      audioSize = audio_prompt_summary_excellent_moderate_SIZE;
+      break;
+    case AUDIO_SUMMARY_EXCELLENT_STRONG:
+      audioData = audio_prompt_summary_excellent_strong;
+      audioSize = audio_prompt_summary_excellent_strong_SIZE;
+      break;
+    case AUDIO_SUMMARY_EXCELLENT_MAXIMUM:
+      audioData = audio_prompt_summary_excellent_maximum;
+      audioSize = audio_prompt_summary_excellent_maximum_SIZE;
+      break;
+
     default:
-      Serial.println("Unknown)");
-      Serial.println("Invalid audio event ID");
+      Serial.println("Unknown audio event ID");
       return;
   }
 

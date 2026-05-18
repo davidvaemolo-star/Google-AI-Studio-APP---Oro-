@@ -85,14 +85,34 @@ class BleManager(private val context: Context) {
         const val PATTERN_TRANSITION: Byte = 51
 
         // Audio Events
-        const val AUDIO_TRAINING_START: Byte = 0x01
-        const val AUDIO_HALFWAY: Byte = 0x02
-        const val AUDIO_SET_COMPLETE: Byte = 0x03
-        const val AUDIO_LAST_SET: Byte = 0x04
-        const val AUDIO_ZONE_TRANSITION: Byte = 0x05
-        const val AUDIO_SESSION_COMPLETE: Byte = 0x06
-        const val AUDIO_PAUSE: Byte = 0x07
-        const val AUDIO_RESUME: Byte = 0x08
+        // Tones (firmware-generated)
+        const val AUDIO_POWER_ON: Byte            = 0x01
+        const val AUDIO_SESSION_START_BEEP: Byte  = 0x02
+        const val AUDIO_SET_CHANGEOVER_BEEP: Byte = 0x03
+
+        // Zone voice prompts
+        const val AUDIO_LAST_SET: Byte            = 0x04
+        const val AUDIO_NEXT_SET_LOW: Byte        = 0x05
+        const val AUDIO_NEXT_SET_MEDIUM: Byte     = 0x06
+        const val AUDIO_NEXT_SET_HIGH: Byte       = 0x07
+
+        // Session summary: Poor sync
+        const val AUDIO_SUMMARY_POOR_LIGHT: Byte      = 0x08
+        const val AUDIO_SUMMARY_POOR_MODERATE: Byte   = 0x09
+        const val AUDIO_SUMMARY_POOR_STRONG: Byte     = 0x0A
+        const val AUDIO_SUMMARY_POOR_MAXIMUM: Byte    = 0x0B
+
+        // Session summary: Good sync
+        const val AUDIO_SUMMARY_GOOD_LIGHT: Byte      = 0x0C
+        const val AUDIO_SUMMARY_GOOD_MODERATE: Byte   = 0x0D
+        const val AUDIO_SUMMARY_GOOD_STRONG: Byte     = 0x0E
+        const val AUDIO_SUMMARY_GOOD_MAXIMUM: Byte    = 0x0F
+
+        // Session summary: Excellent sync
+        const val AUDIO_SUMMARY_EXCELLENT_LIGHT: Byte      = 0x10
+        const val AUDIO_SUMMARY_EXCELLENT_MODERATE: Byte   = 0x11
+        const val AUDIO_SUMMARY_EXCELLENT_STRONG: Byte     = 0x12
+        const val AUDIO_SUMMARY_EXCELLENT_MAXIMUM: Byte    = 0x13
 
         // Device States
         const val STATE_IDLE: Byte = 0x00

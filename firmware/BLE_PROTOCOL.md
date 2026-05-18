@@ -100,26 +100,24 @@ Byte 1: Total Strokes MSB
 Byte 2: Total Sets (uint8)
 Byte 3: Strokes Per Minute LSB (uint16)
 Byte 4: Strokes Per Minute MSB
-Byte 5: Zone Color (uint8)
+Byte 5: Intensity (uint8)
 ```
 
-**Zone Color Codes:**
-| Value | Zone Name | Android Color |
-|-------|-----------|---------------|
-| 0x01 | Recovery | Light Blue (#64B5F6) |
-| 0x02 | Endurance | Green (#81C784) |
-| 0x03 | Tempo | Yellow (#FFD54F) |
-| 0x04 | Threshold | Orange (#FFB74D) |
-| 0x05 | VO2 Max | Red (#E57373) |
-| 0x06 | Anaerobic | Dark Red (#F44336) |
+**Intensity Codes:**
+| Value | Intensity |
+|-------|-----------|
+| 0x01 | Low |
+| 0x02 | Medium |
+| 0x03 | High |
+| 0x04–0x06 | Reserved |
 
 **Example: Configure Zone**
 ```kotlin
-// Zone: 10 strokes, 3 sets, 20 SPM, Endurance (Green)
+// Zone: 10 strokes, 3 sets, 20 SPM, Medium intensity
 val strokes: UShort = 10u
 val sets: UByte = 3u
 val spm: UShort = 20u
-val color: UByte = 0x02u
+val intensity: UByte = 0x02u  // Medium
 
 val data = byteArrayOf(
     (strokes.toInt() and 0xFF).toByte(),
@@ -127,7 +125,7 @@ val data = byteArrayOf(
     sets.toByte(),
     (spm.toInt() and 0xFF).toByte(),
     (spm.toInt() shr 8).toByte(),
-    color.toByte()
+    intensity.toByte()
 )
 zoneSettingsChar.write(data)
 ```
@@ -156,6 +154,7 @@ Byte 4: Battery Level (uint8, 0-100%)
 | 0x02 | STATE_TRAINING | Actively running training |
 | 0x03 | STATE_PAUSED | Training paused |
 | 0x04 | STATE_COMPLETE | Training session completed |
+| 0x05 | STATE_CALIBRATING | Calibration in progress |
 | 0xFF | STATE_ERROR | Hardware error |
 
 **Example: Parse Status**
@@ -189,6 +188,163 @@ override fun onCharacteristicChanged(
 ```
 Byte 0: Connection State (uint8, 0=disconnected, 1=connected)
 Byte 1: RSSI (int8, reserved - currently 0)
+```
+
+---
+
+##### 1.5 Stroke Event (Notify Only)
+**UUID:** `12340005-1234-5678-1234-56789abcdef0`
+**Properties:** `BLENotify`
+**Size:** 16 bytes
+
+Emitted by the firmware on every stroke phase transition (Catch, Drive, Finish, Recovery). The Training Controller uses the Catch notification to trigger haptics on all Followers.
+
+**Data Format:**
+```
+Byte  0:     Stroke Phase (uint8)
+Bytes 1–4:   Timestamp ms (uint32 LE)
+Bytes 5–6:   Current acceleration × 100 (int16 LE, e.g. 183 = 1.83 g)
+Bytes 7–8:   Peak acceleration this stroke × 100 (int16 LE)
+Bytes 9–10:  Min acceleration this stroke × 100 (int16 LE)
+Bytes 11–12: Phase duration ms (uint16 LE)
+Byte  13:    Top Hand Pressure % at this moment (uint8, 0–100)
+Byte  14:    Stroke flags (uint8, bit 0 = top-hand-pressure threshold triggered)
+Byte  15:    Reserved (0x00)
+```
+
+**Stroke Phases:**
+| Value | Name | Description |
+|-------|------|-------------|
+| 0x01 | CATCH | Paddle entry — haptic trigger point |
+| 0x02 | DRIVE | Power phase, after Catch |
+| 0x03 | FINISH | Paddle exit — stroke count advances |
+| 0x04 | RECOVERY | Return phase until next Catch |
+
+**Phase Duration Field:**
+- On DRIVE notification: duration since Catch (ms)
+- On FINISH notification: duration since Drive (ms)
+- On RECOVERY notification: duration since Finish (ms)
+- On CATCH notification: 0
+
+---
+
+##### 1.6 Calibration (Write + Notify)
+**UUID:** `12340006-1234-5678-1234-56789abcdef0`
+**Properties:** `BLEWrite | BLENotify`
+
+A device must complete calibration before it is Ready to join a session.
+
+**Write Format (phone → device): 4 bytes**
+```
+Byte 0: Calibration Command (uint8)
+Bytes 1–2: Threshold × 100 (int16 LE) — used by CAL_CMD_SET_THRESHOLD only
+Byte 3: Reserved (0x00)
+```
+
+**Calibration Commands (Write):**
+| Value | Name | Description |
+|-------|------|-------------|
+| 0x01 | CAL_CMD_START | Begin calibration (50-stroke session) |
+| 0x02 | CAL_CMD_STOP | Abort calibration |
+| 0x03 | CAL_CMD_SET_THRESHOLD | Override threshold (bytes 1–2 = threshold × 100) |
+| 0x04 | CAL_CMD_GET_STATUS | Request current status notification |
+
+**Notify Format — Status Update (device → phone): 8 bytes**
+
+Sent periodically during calibration and on completion.
+```
+Byte 0:    Command echo (CAL_CMD_GET_STATUS = 0x04)
+Byte 1:    Stroke count so far (uint8, target = 50)
+Bytes 2–3: Max acceleration seen × 100 (int16 LE)
+Bytes 4–5: Min acceleration seen × 100 (int16 LE)
+Bytes 6–7: Reserved (0x00)
+```
+
+**Notify Format — Threshold Acknowledged: 4 bytes**
+
+Sent in response to CAL_CMD_SET_THRESHOLD.
+```
+Byte 0:    CAL_CMD_SET_THRESHOLD (0x03)
+Bytes 1–2: Threshold × 100 echoed back (int16 LE)
+Byte 3:    0x01 (success)
+```
+
+Calibration completes automatically after 50 strokes. The firmware sets the detection threshold to 55% of the maximum acceleration observed and transitions the device to STATE_READY.
+
+---
+
+##### 1.7 Audio Control (Write Only)
+**UUID:** `12340007-1234-5678-1234-56789abcdef0`
+**Properties:** `BLEWrite`
+**Size:** 2 bytes
+
+Triggers audio playback on the device. Tones are firmware-generated; voice prompts are pre-recorded audio played via the MAX98357A I2S amplifier.
+
+**Data Format:**
+```
+Byte 0: Audio Event (uint8)
+Byte 1: Volume (uint8, 0–100)
+```
+
+**Audio Events:**
+| Value | Name | Type | Description |
+|-------|------|------|-------------|
+| 0x01 | AUDIO_POWER_ON | Voice | "Oro" — played on boot |
+| 0x02 | AUDIO_SESSION_START_BEEP | Tone | 3 short beeps + 1 long go-beep |
+| 0x03 | AUDIO_SET_CHANGEOVER_BEEP | Tone | Single beep: set complete |
+| 0x04 | AUDIO_LAST_SET | Voice | "last set" |
+| 0x05 | AUDIO_NEXT_SET_LOW | Voice | "next set low" |
+| 0x06 | AUDIO_NEXT_SET_MEDIUM | Voice | "next set medium" |
+| 0x07 | AUDIO_NEXT_SET_HIGH | Voice | "next set high" |
+| 0x08 | AUDIO_SUMMARY_POOR_LIGHT | Voice | Session summary: Poor sync, Light power |
+| 0x09 | AUDIO_SUMMARY_POOR_MODERATE | Voice | Session summary: Poor sync, Moderate power |
+| 0x0A | AUDIO_SUMMARY_POOR_STRONG | Voice | Session summary: Poor sync, Strong power |
+| 0x0B | AUDIO_SUMMARY_POOR_MAXIMUM | Voice | Session summary: Poor sync, Maximum power |
+| 0x0C | AUDIO_SUMMARY_GOOD_LIGHT | Voice | Session summary: Good sync, Light power |
+| 0x0D | AUDIO_SUMMARY_GOOD_MODERATE | Voice | Session summary: Good sync, Moderate power |
+| 0x0E | AUDIO_SUMMARY_GOOD_STRONG | Voice | Session summary: Good sync, Strong power |
+| 0x0F | AUDIO_SUMMARY_GOOD_MAXIMUM | Voice | Session summary: Good sync, Maximum power |
+| 0x10 | AUDIO_SUMMARY_EXCELLENT_LIGHT | Voice | Session summary: Excellent sync, Light power |
+| 0x11 | AUDIO_SUMMARY_EXCELLENT_MODERATE | Voice | Session summary: Excellent sync, Moderate power |
+| 0x12 | AUDIO_SUMMARY_EXCELLENT_STRONG | Voice | Session summary: Excellent sync, Strong power |
+| 0x13 | AUDIO_SUMMARY_EXCELLENT_MAXIMUM | Voice | Session summary: Excellent sync, Maximum power |
+
+The 12 summary prompts (0x08–0x13) correspond to Sync Rating (Poor/Good/Excellent) × Power Range (Light/Moderate/Strong/Maximum). The Training Controller selects and sends the appropriate event at session end.
+
+---
+
+##### 1.8 FSR Data (Notify Only)
+**UUID:** `12340008-1234-5678-1234-56789abcdef0`
+**Properties:** `BLENotify`
+**Size:** 4 bytes
+
+Streams Top Hand Pressure readings at 20 Hz. The Training Controller uses this data to compute Peak Pressure per stroke (the maximum value during the Drive phase) and derive Power Range for the Session Summary.
+
+**Data Format:**
+```
+Byte 0:    Top Hand Pressure % (uint8, 0–100)
+Bytes 1–2: Raw ADC value (uint16 LE, 0–4095)
+Byte 3:    Threshold triggered (uint8, 0x00 = below, 0x01 = above)
+```
+
+Note: The field name in firmware is `forcePercent` / `thresholdTriggered`. The canonical domain term is **Top Hand Pressure**. Android model fields should use `topHandPressurePercent` / `topHandPressureThresholdTriggered`.
+
+---
+
+##### 1.9 LED Control (Write Only)
+**UUID:** `12340009-1234-5678-1234-56789abcdef0`
+**Properties:** `BLEWrite`
+**Size:** 5 bytes
+
+Controls the device RGB LED. Hardware not yet connected in current firmware (characteristic is defined; LED drive logic is pending).
+
+**Data Format:**
+```
+Byte 0: Command (uint8)
+Byte 1: Red (uint8, 0–255)
+Byte 2: Green (uint8, 0–255)
+Byte 3: Blue (uint8, 0–255)
+Byte 4: Parameter (uint8, command-specific)
 ```
 
 ---
@@ -231,15 +387,20 @@ Update `BleManager.kt` with these UUID constants:
 ```kotlin
 object BleConstants {
     // Oro Haptic Service
-    val ORO_HAPTIC_SERVICE_UUID = UUID.fromString("12340000-1234-5678-1234-56789abcdef0")
-    val HAPTIC_CONTROL_UUID = UUID.fromString("12340001-1234-5678-1234-56789abcdef0")
-    val ZONE_SETTINGS_UUID = UUID.fromString("12340002-1234-5678-1234-56789abcdef0")
-    val DEVICE_STATUS_UUID = UUID.fromString("12340003-1234-5678-1234-56789abcdef0")
-    val CONNECTION_STATUS_UUID = UUID.fromString("12340004-1234-5678-1234-56789abcdef0")
+    val ORO_HAPTIC_SERVICE_UUID    = UUID.fromString("12340000-1234-5678-1234-56789abcdef0")
+    val HAPTIC_CONTROL_UUID        = UUID.fromString("12340001-1234-5678-1234-56789abcdef0")
+    val ZONE_SETTINGS_UUID         = UUID.fromString("12340002-1234-5678-1234-56789abcdef0")
+    val DEVICE_STATUS_UUID         = UUID.fromString("12340003-1234-5678-1234-56789abcdef0")
+    val CONNECTION_STATUS_UUID     = UUID.fromString("12340004-1234-5678-1234-56789abcdef0")
+    val STROKE_EVENT_UUID          = UUID.fromString("12340005-1234-5678-1234-56789abcdef0")
+    val CALIBRATION_UUID           = UUID.fromString("12340006-1234-5678-1234-56789abcdef0")
+    val AUDIO_CONTROL_UUID         = UUID.fromString("12340007-1234-5678-1234-56789abcdef0")
+    val FSR_DATA_UUID              = UUID.fromString("12340008-1234-5678-1234-56789abcdef0")
+    val LED_CONTROL_UUID           = UUID.fromString("12340009-1234-5678-1234-56789abcdef0")
 
     // Battery Service
-    val BATTERY_SERVICE_UUID = UUID.fromString("0000180F-0000-1000-8000-00805F9B34FB")
-    val BATTERY_LEVEL_UUID = UUID.fromString("00002A19-0000-1000-8000-00805F9B34FB")
+    val BATTERY_SERVICE_UUID       = UUID.fromString("0000180F-0000-1000-8000-00805F9B34FB")
+    val BATTERY_LEVEL_UUID         = UUID.fromString("00002A19-0000-1000-8000-00805F9B34FB")
 }
 ```
 
@@ -272,14 +433,21 @@ private val gattCallback = object : BluetoothGattCallback() {
     }
 
     override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
-        // Get characteristics
         val hapticService = gatt.getService(BleConstants.ORO_HAPTIC_SERVICE_UUID)
-        hapticControlChar = hapticService.getCharacteristic(BleConstants.HAPTIC_CONTROL_UUID)
-        zoneSettingsChar = hapticService.getCharacteristic(BleConstants.ZONE_SETTINGS_UUID)
-        deviceStatusChar = hapticService.getCharacteristic(BleConstants.DEVICE_STATUS_UUID)
+        hapticControlChar  = hapticService.getCharacteristic(BleConstants.HAPTIC_CONTROL_UUID)
+        zoneSettingsChar   = hapticService.getCharacteristic(BleConstants.ZONE_SETTINGS_UUID)
+        deviceStatusChar   = hapticService.getCharacteristic(BleConstants.DEVICE_STATUS_UUID)
+        strokeEventChar    = hapticService.getCharacteristic(BleConstants.STROKE_EVENT_UUID)
+        calibrationChar    = hapticService.getCharacteristic(BleConstants.CALIBRATION_UUID)
+        audioControlChar   = hapticService.getCharacteristic(BleConstants.AUDIO_CONTROL_UUID)
+        fsrDataChar        = hapticService.getCharacteristic(BleConstants.FSR_DATA_UUID)
+        ledControlChar     = hapticService.getCharacteristic(BleConstants.LED_CONTROL_UUID)
 
         // Enable notifications
         enableNotifications(gatt, deviceStatusChar)
+        enableNotifications(gatt, strokeEventChar)
+        enableNotifications(gatt, calibrationChar)
+        enableNotifications(gatt, fsrDataChar)
 
         val batteryService = gatt.getService(BleConstants.BATTERY_SERVICE_UUID)
         batteryLevelChar = batteryService.getCharacteristic(BleConstants.BATTERY_LEVEL_UUID)
@@ -306,23 +474,11 @@ fun configureZone(zone: TrainingZone) {
         putShort(zone.strokes.toShort())
         put(zone.sets.toByte())
         putShort(zone.spm.toShort())
-        put(getZoneColorCode(zone.color))
+        put(zone.intensityCode())  // 0x01=Low, 0x02=Medium, 0x03=High
     }.array()
 
     zoneSettingsChar.value = data
     bluetoothGatt?.writeCharacteristic(zoneSettingsChar)
-}
-
-private fun getZoneColorCode(color: Long): Byte {
-    return when (color) {
-        0xFF64B5F6 -> 0x01  // Recovery - Light Blue
-        0xFF81C784 -> 0x02  // Endurance - Green
-        0xFFFFD54F -> 0x03  // Tempo - Yellow
-        0xFFFFB74D -> 0x04  // Threshold - Orange
-        0xFFE57373 -> 0x05  // VO2 Max - Red
-        0xFFF44336 -> 0x06  // Anaerobic - Dark Red
-        else -> 0x02  // Default to Endurance
-    }
 }
 ```
 
@@ -520,7 +676,12 @@ Oro Haptic Service:        12340000-1234-5678-1234-56789abcdef0
 ├─ Haptic Control:         12340001-1234-5678-1234-56789abcdef0
 ├─ Zone Settings:          12340002-1234-5678-1234-56789abcdef0
 ├─ Device Status:          12340003-1234-5678-1234-56789abcdef0
-└─ Connection Status:      12340004-1234-5678-1234-56789abcdef0
+├─ Connection Status:      12340004-1234-5678-1234-56789abcdef0
+├─ Stroke Event:           12340005-1234-5678-1234-56789abcdef0
+├─ Calibration:            12340006-1234-5678-1234-56789abcdef0
+├─ Audio Control:          12340007-1234-5678-1234-56789abcdef0
+├─ FSR Data:               12340008-1234-5678-1234-56789abcdef0
+└─ LED Control:            12340009-1234-5678-1234-56789abcdef0
 
 Battery Service:           0000180F-0000-1000-8000-00805F9B34FB
 └─ Battery Level:          00002A19-0000-1000-8000-00805F9B34FB
@@ -528,6 +689,6 @@ Battery Service:           0000180F-0000-1000-8000-00805F9B34FB
 
 ---
 
-**Document Version:** 1.0
-**Last Updated:** 2025-11-02
-**Firmware Compatibility:** OroHapticFirmware v1.0
+**Document Version:** 1.1
+**Last Updated:** 2026-05-18
+**Firmware Compatibility:** OroHapticFirmware v1.0+

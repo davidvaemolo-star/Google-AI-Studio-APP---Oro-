@@ -15,6 +15,8 @@ import com.orotrain.oro.model.AppDestination
 import com.orotrain.oro.model.MAX_DEVICES
 import com.orotrain.oro.ui.components.BottomNavigationBar
 import com.orotrain.oro.ui.screens.ConnectionScreen
+import com.orotrain.oro.ui.screens.ProgrammeEditorScreen
+import com.orotrain.oro.ui.screens.ProgrammeListScreen
 import com.orotrain.oro.ui.screens.TrainingScreen
 
 @Composable
@@ -41,6 +43,34 @@ fun OroApp(
                 .background(MaterialTheme.colorScheme.background)
         ) {
             when (state.destination) {
+                AppDestination.Programmes -> {
+                    val editing = state.editingProgramme
+                    if (editing != null) {
+                        ProgrammeEditorScreen(
+                            programme = editing,
+                            onBack = viewModel::closeProgrammeEditor,
+                            onLoad = { viewModel.loadProgramme(editing.id) },
+                            onAddZone = viewModel::addZoneToEditingProgramme,
+                            onRemoveZone = viewModel::removeZoneFromProgramme,
+                            onDuplicateZone = viewModel::duplicateZoneInProgramme,
+                            onAddAfterZone = viewModel::addZoneAfterInProgramme,
+                            onAdjustZone = viewModel::adjustZoneInProgramme,
+                            onReorderZones = viewModel::reorderZonesInProgramme,
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    } else {
+                        ProgrammeListScreen(
+                            state = state,
+                            onCreateProgramme = viewModel::createProgramme,
+                            onEditProgramme = viewModel::openProgrammeEditor,
+                            onLoadProgramme = viewModel::loadProgramme,
+                            onDuplicateProgramme = viewModel::duplicateProgramme,
+                            onDeleteProgramme = viewModel::deleteProgramme,
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    }
+                }
+
                 AppDestination.Connection -> ConnectionScreen(
                     modifier = Modifier.fillMaxSize(),
                     state = state,
@@ -66,6 +96,7 @@ fun OroApp(
                     onAddAfterZone = viewModel::addZoneAfter,
                     onAdjustZone = viewModel::adjustZone,
                     onReorderZones = viewModel::reorderZones,
+                    onGoToProgrammes = { viewModel.setDestination(AppDestination.Programmes) },
                     onStartTraining = viewModel::startTrainingSession,
                     onPauseTraining = viewModel::pauseTrainingSession,
                     onResumeTraining = viewModel::resumeTrainingSession,

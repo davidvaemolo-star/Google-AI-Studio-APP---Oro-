@@ -18,6 +18,10 @@
 #define I2S_CONFIG_MCKFREQ_MCKFREQ_32MDIV21 0x54000000UL
 #endif
 
+#ifndef I2S_CONFIG_RATIO_RATIO_48X
+#define I2S_CONFIG_RATIO_RATIO_48X 1UL
+#endif
+
 #ifndef I2S_CONFIG_RATIO_RATIO_64X
 #define I2S_CONFIG_RATIO_RATIO_64X 2UL
 #endif
@@ -124,9 +128,9 @@ void AudioI2S::configureI2S() {
     NRF_I2S->CONFIG.TXEN     = I2S_CONFIG_TXEN_TXEN_Enabled;
     NRF_I2S->CONFIG.RXEN     = I2S_CONFIG_RXEN_RXEN_Disabled;
 
-    // Configure master clock and ratio: 32MHz/21 = 1.524 MHz MCK, RATIO 96 => 15.875 kHz LRCK (closer to 16kHz!)
+    // Configure master clock and ratio: 32MHz/21 = 1.524 MHz MCK, RATIO 48 => 31.746 kHz LRCK (0.79% deviation from 32kHz)
     NRF_I2S->CONFIG.MCKFREQ = I2S_CONFIG_MCKFREQ_MCKFREQ_32MDIV21;
-    NRF_I2S->CONFIG.RATIO = I2S_CONFIG_RATIO_RATIO_96X;
+    NRF_I2S->CONFIG.RATIO = I2S_CONFIG_RATIO_RATIO_48X;
 
     // Enable I2S
     NRF_I2S->ENABLE = 1;

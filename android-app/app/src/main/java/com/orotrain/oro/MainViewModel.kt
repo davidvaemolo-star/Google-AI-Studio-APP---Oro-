@@ -8,6 +8,7 @@ import com.orotrain.oro.coaching.CoachingEngine
 import com.orotrain.oro.ble.BleManager
 import com.orotrain.oro.data.SessionRepository
 import com.orotrain.oro.model.AppDestination
+import com.orotrain.oro.model.Programme
 import com.orotrain.oro.model.DeviceStatus
 import com.orotrain.oro.model.HapticDevice
 import com.orotrain.oro.model.MAX_SETS
@@ -29,7 +30,8 @@ import kotlinx.coroutines.launch
 class MainViewModel(
     private val bleManager: BleManager? = null,
     private val audioManager: com.orotrain.oro.audio.AudioManager? = null,
-    private val sessionRepository: SessionRepository? = null
+    private val sessionRepository: SessionRepository? = null,
+    private val programmeRepository: com.orotrain.oro.data.ProgrammeRepository? = null
 ) : ViewModel() {
 
     companion object {
@@ -44,6 +46,11 @@ class MainViewModel(
 
     // Real-time coaching feedback engine
     private val coachingEngine = CoachingEngine(bleManager, audioManager)
+
+    // Tracks Android-side receive time of pacer's last CATCH event for sync latency calculation
+    @Volatile private var pacerLastCatchReceivedMs: Long? = null
+    // Running (sum, count) per follower device for session-average sync latency
+    private val syncLatencyAccumulator = mutableMapOf<String, Pair<Long, Int>>()
 
     init {
         // Observe BLE manager state if available
@@ -109,11 +116,43 @@ class MainViewModel(
                 }
             }
         }
+
+        // Load saved programmes on startup
+        programmeRepository?.let { repo ->
+            _uiState.update { it.copy(programmes = repo.loadAll()) }
+        }
     }
 
     private fun handleStrokeEvent(event: BleManager.StrokeEvent) {
-        // Forward to analytics engine
-        strokeAnalyzer.onStrokeEvent(event)
+        // Forward to analytics engine only during active training
+        if (_uiState.value.trainingSession.status == com.orotrain.oro.model.TrainingStatus.Active) {
+            strokeAnalyzer.onStrokeEvent(event)
+        }
+
+        // Record pacer CATCH receive time and compute follower sync latency before state update.
+        // Both mutations (pacerLastCatchReceivedMs, syncLatencyAccumulator) must live outside
+        // _uiState.update because StateFlow.update retries its lambda under CAS contention.
+        val nowMs = System.currentTimeMillis()
+        val syncQualityUpdate: Pair<String, Int>? = run {
+            if (_uiState.value.trainingSession.status == com.orotrain.oro.model.TrainingStatus.Active &&
+                event.phase == BleManager.STROKE_PHASE_CATCH) {
+                val pacer = _uiState.value.devices.find { it.seat == 1 }
+                if (event.deviceId == pacer?.id) {
+                    pacerLastCatchReceivedMs = nowMs
+                    null
+                } else {
+                    val pacerTs = pacerLastCatchReceivedMs
+                    if (pacerTs != null) {
+                        val latencyMs = (nowMs - pacerTs).toInt().coerceIn(0, 2000)
+                        val (prevSum, prevCount) = syncLatencyAccumulator.getOrDefault(event.deviceId, Pair(0L, 0))
+                        val newSum = prevSum + latencyMs
+                        val newCount = prevCount + 1
+                        syncLatencyAccumulator[event.deviceId] = Pair(newSum, newCount)
+                        event.deviceId to (newSum / newCount).toInt()
+                    } else null
+                }
+            } else null
+        }
 
         _uiState.update { state ->
             val updatedDevices = state.devices.map { device ->
@@ -133,9 +172,10 @@ class MainViewModel(
                 }
             }
 
-            // Update training session progress if active and event is from pacer
             val pacer = state.devices.find { it.seat == 1 }
-            val updatedSession = if (state.trainingSession.status == com.orotrain.oro.model.TrainingStatus.Active &&
+
+            // Update training session progress if active and event is from pacer
+            val sessionAfterProgress = if (state.trainingSession.status == com.orotrain.oro.model.TrainingStatus.Active &&
                 event.deviceId == pacer?.id &&
                 event.phase == BleManager.STROKE_PHASE_FINISH) {
 
@@ -147,6 +187,15 @@ class MainViewModel(
                 }
             } else {
                 state.trainingSession
+            }
+
+            // Apply pre-computed sync quality update (accumulator already mutated above)
+            val updatedSession = if (syncQualityUpdate != null) {
+                sessionAfterProgress.copy(
+                    syncQuality = sessionAfterProgress.syncQuality + syncQualityUpdate
+                )
+            } else {
+                sessionAfterProgress
             }
 
             state.copy(
@@ -241,23 +290,6 @@ class MainViewModel(
             strokeAnalyzer.checkPaceDeviation(currentZone.targetSpm)
         }
 
-        // Audio: Halfway announcement
-        if (newStroke == currentZone.strokes / 2) {
-            audioManager?.announceHalfway(newStroke, currentZone.strokes)
-            broadcastAudioPrompt(BleManager.AUDIO_HALFWAY, 80)
-        }
-
-        // Audio: Warning before zone transition (5 strokes remaining)
-        if (newStroke == currentZone.strokes && session.currentSet == currentZone.sets) {
-            val state = _uiState.value
-            val nextZoneIndex = session.currentZoneIndex + 1
-            if (nextZoneIndex < state.zones.size) {
-                val nextZone = state.zones[nextZoneIndex]
-                audioManager?.announceZoneTransition(nextZone, nextZoneIndex + 1, state.zones.size, 5)
-                broadcastAudioPrompt(BleManager.AUDIO_ZONE_TRANSITION, 90)
-            }
-        }
-
         // Check if set is complete
         return if (newStroke >= currentZone.strokes) {
             val newSet = session.currentSet + 1
@@ -267,15 +299,23 @@ class MainViewModel(
                 advanceToNextZone(session, updatedTimestamps, calculatedSpm)
             } else {
                 // Move to next set
-                // Audio: Set complete announcement
-                audioManager?.announceSetComplete(session.currentSet, currentZone.sets)
-                audioManager?.playSetCompleteSound()
-                broadcastAudioPrompt(BleManager.AUDIO_SET_COMPLETE, 100)
+                // Beep: set complete changeover
+                broadcastAudioPrompt(BleManager.AUDIO_SET_CHANGEOVER_BEEP, 100)
 
-                // Audio: Last set announcement
+                // Voice: entering last set of this zone
                 if (newSet == currentZone.sets) {
-                    audioManager?.announceLastSet()
-                    broadcastAudioPrompt(BleManager.AUDIO_LAST_SET, 100)
+                    val state = _uiState.value
+                    val nextZoneIndex = session.currentZoneIndex + 1
+                    if (nextZoneIndex < state.zones.size) {
+                        val nextZoneEvent = when (state.zones[nextZoneIndex].level) {
+                            com.orotrain.oro.model.ZoneLevel.Low    -> BleManager.AUDIO_NEXT_SET_LOW
+                            com.orotrain.oro.model.ZoneLevel.Medium -> BleManager.AUDIO_NEXT_SET_MEDIUM
+                            com.orotrain.oro.model.ZoneLevel.High   -> BleManager.AUDIO_NEXT_SET_HIGH
+                        }
+                        broadcastAudioPrompt(nextZoneEvent, 100)
+                    } else {
+                        broadcastAudioPrompt(BleManager.AUDIO_LAST_SET, 100)
+                    }
                 }
 
                 session.copy(
@@ -305,13 +345,6 @@ class MainViewModel(
 
         return if (nextZoneIndex < state.zones.size) {
             // Move to next zone
-            val nextZone = state.zones[nextZoneIndex]
-
-            // Audio: Zone transition announcement
-            audioManager?.playZoneTransitionSound()
-            audioManager?.announceZoneTransition(nextZone, nextZoneIndex + 1, state.zones.size, 0)
-            broadcastAudioPrompt(BleManager.AUDIO_ZONE_TRANSITION, 100)
-
             viewModelScope.launch {
                 configureCurrentZone()
             }
@@ -325,11 +358,8 @@ class MainViewModel(
             )
         } else {
             // All zones complete - finish training
-            // Audio: Session complete announcement
-            val totalStrokes = state.zones.sumOf { it.strokes * it.sets }
-            audioManager?.playSessionCompleteSound()
-            audioManager?.announceSessionComplete(totalStrokes, spm)
-            broadcastAudioPrompt(BleManager.AUDIO_SESSION_COMPLETE, 100)
+            val summaryEvent = selectSessionSummaryPrompt(_uiState.value.trainingSession, strokeAnalyzer)
+            broadcastAudioPrompt(summaryEvent, 100)
 
             stopTrainingSession()
             session.copy(
@@ -367,6 +397,47 @@ class MainViewModel(
             intensity = intensity,
             includePacer = true  // Include pacer so all devices pulse together
         )
+    }
+
+    private fun selectSessionSummaryPrompt(
+        trainingSession: TrainingSessionState,
+        strokeAnalyzer: StrokeAnalyzer
+    ): Byte {
+        val avgLatencyMs = if (trainingSession.syncQuality.isEmpty()) 300.0
+                           else trainingSession.syncQuality.values.average()
+        val syncScore = ((300.0 - avgLatencyMs) / 250.0 * 100.0).coerceIn(0.0, 100.0).toInt()
+
+        val avgFsrPeak = strokeAnalyzer.sessionAverageFsrPeak()
+
+        val powerEvent: (Byte, Byte, Byte, Byte) -> Byte = { light, moderate, strong, maximum ->
+            when {
+                avgFsrPeak >= 76 -> maximum
+                avgFsrPeak >= 51 -> strong
+                avgFsrPeak >= 26 -> moderate
+                else             -> light
+            }
+        }
+
+        return when {
+            syncScore >= 80 -> powerEvent(
+                BleManager.AUDIO_SUMMARY_EXCELLENT_LIGHT,
+                BleManager.AUDIO_SUMMARY_EXCELLENT_MODERATE,
+                BleManager.AUDIO_SUMMARY_EXCELLENT_STRONG,
+                BleManager.AUDIO_SUMMARY_EXCELLENT_MAXIMUM
+            )
+            syncScore >= 50 -> powerEvent(
+                BleManager.AUDIO_SUMMARY_GOOD_LIGHT,
+                BleManager.AUDIO_SUMMARY_GOOD_MODERATE,
+                BleManager.AUDIO_SUMMARY_GOOD_STRONG,
+                BleManager.AUDIO_SUMMARY_GOOD_MAXIMUM
+            )
+            else -> powerEvent(
+                BleManager.AUDIO_SUMMARY_POOR_LIGHT,
+                BleManager.AUDIO_SUMMARY_POOR_MODERATE,
+                BleManager.AUDIO_SUMMARY_POOR_STRONG,
+                BleManager.AUDIO_SUMMARY_POOR_MAXIMUM
+            )
+        }
     }
 
     private fun broadcastAudioPrompt(audioEvent: Byte, volume: Int = 90) {
@@ -465,6 +536,169 @@ class MainViewModel(
             val zone = zones.removeAt(fromIndex)
             zones.add(toIndex, zone)
             state.copy(zones = zones)
+        }
+    }
+
+    // ── Programme library ────────────────────────────────────────────────────
+
+    fun createProgramme(name: String) {
+        val programme = Programme(name = name.trim())
+        _uiState.update { state ->
+            state.copy(programmes = state.programmes + programme)
+        }
+        persistProgrammes()
+    }
+
+    fun renameProgramme(id: String, name: String) {
+        _uiState.update { state ->
+            state.copy(
+                programmes = state.programmes.map {
+                    if (it.id == id) it.copy(name = name.trim()) else it
+                },
+                activeProgramme = state.activeProgramme?.let {
+                    if (it.id == id) it.copy(name = name.trim()) else it
+                }
+            )
+        }
+        persistProgrammes()
+    }
+
+    fun deleteProgramme(id: String) {
+        _uiState.update { state ->
+            val isActive = state.activeProgramme?.id == id
+            state.copy(
+                programmes = state.programmes.filterNot { it.id == id },
+                activeProgramme = if (isActive) null else state.activeProgramme,
+                zones = if (isActive) emptyList() else state.zones,
+                editingProgrammeId = if (state.editingProgrammeId == id) null else state.editingProgrammeId
+            )
+        }
+        persistProgrammes()
+    }
+
+    fun duplicateProgramme(id: String) {
+        _uiState.update { state ->
+            val source = state.programmes.find { it.id == id } ?: return@update state
+            val copy = source.copy(
+                id = java.util.UUID.randomUUID().toString(),
+                name = "${source.name} (copy)",
+                zones = source.zones.map { it.copy(id = java.util.UUID.randomUUID().toString()) }
+            )
+            val index = state.programmes.indexOfFirst { it.id == id }
+            val updated = state.programmes.toMutableList().also { it.add(index + 1, copy) }
+            state.copy(programmes = updated)
+        }
+        persistProgrammes()
+    }
+
+    fun loadProgramme(id: String) {
+        _uiState.update { state ->
+            val programme = state.programmes.find { it.id == id } ?: return@update state
+            state.copy(
+                activeProgramme = programme,
+                zones = programme.zones.map { it.copy() },
+                destination = AppDestination.Training
+            )
+        }
+    }
+
+    fun openProgrammeEditor(id: String) {
+        _uiState.update { it.copy(editingProgrammeId = id, destination = AppDestination.Programmes) }
+    }
+
+    fun closeProgrammeEditor() {
+        _uiState.update { it.copy(editingProgrammeId = null) }
+    }
+
+    fun addZoneToEditingProgramme() {
+        _uiState.update { state ->
+            val id = state.editingProgrammeId ?: return@update state
+            val programme = state.programmes.find { it.id == id } ?: return@update state
+            if (programme.zones.size >= MAX_ZONES) return@update state
+            val updated = programme.copy(zones = programme.zones + Zone())
+            state.copy(programmes = state.programmes.map { if (it.id == id) updated else it })
+        }
+        persistProgrammes()
+    }
+
+    fun addZoneAfterInProgramme(zoneId: String) {
+        _uiState.update { state ->
+            val programmeId = state.editingProgrammeId ?: return@update state
+            val programme = state.programmes.find { it.id == programmeId } ?: return@update state
+            if (programme.zones.size >= MAX_ZONES) return@update state
+            val index = programme.zones.indexOfFirst { it.id == zoneId }
+            if (index == -1) return@update state
+            val zones = programme.zones.toMutableList().also { it.add(index + 1, Zone()) }
+            val updated = programme.copy(zones = zones)
+            state.copy(programmes = state.programmes.map { if (it.id == programmeId) updated else it })
+        }
+        persistProgrammes()
+    }
+
+    fun duplicateZoneInProgramme(zoneId: String) {
+        _uiState.update { state ->
+            val programmeId = state.editingProgrammeId ?: return@update state
+            val programme = state.programmes.find { it.id == programmeId } ?: return@update state
+            if (programme.zones.size >= MAX_ZONES) return@update state
+            val index = programme.zones.indexOfFirst { it.id == zoneId }
+            if (index == -1) return@update state
+            val copy = programme.zones[index].copy(id = java.util.UUID.randomUUID().toString())
+            val zones = programme.zones.toMutableList().also { it.add(index + 1, copy) }
+            val updated = programme.copy(zones = zones)
+            state.copy(programmes = state.programmes.map { if (it.id == programmeId) updated else it })
+        }
+        persistProgrammes()
+    }
+
+    fun removeZoneFromProgramme(zoneId: String) {
+        _uiState.update { state ->
+            val programmeId = state.editingProgrammeId ?: return@update state
+            val programme = state.programmes.find { it.id == programmeId } ?: return@update state
+            val updated = programme.copy(zones = programme.zones.filterNot { it.id == zoneId })
+            state.copy(programmes = state.programmes.map { if (it.id == programmeId) updated else it })
+        }
+        persistProgrammes()
+    }
+
+    fun adjustZoneInProgramme(zoneId: String, field: ZoneField, delta: Int) {
+        _uiState.update { state ->
+            val programmeId = state.editingProgrammeId ?: return@update state
+            val programme = state.programmes.find { it.id == programmeId } ?: return@update state
+            val zones = programme.zones.map { zone ->
+                if (zone.id != zoneId) return@map zone
+                when (field) {
+                    ZoneField.Strokes -> zone.copy(strokes = (zone.strokes + delta).coerceIn(MIN_VALUE, MAX_STROKES))
+                    ZoneField.Sets -> zone.copy(sets = (zone.sets + delta).coerceIn(MIN_VALUE, MAX_SETS))
+                    ZoneField.Level -> {
+                        val levels = com.orotrain.oro.model.ZoneLevel.values()
+                        val newIndex = (levels.indexOf(zone.level) + delta).coerceIn(0, levels.size - 1)
+                        zone.copy(level = levels[newIndex])
+                    }
+                }
+            }
+            val updated = programme.copy(zones = zones)
+            state.copy(programmes = state.programmes.map { if (it.id == programmeId) updated else it })
+        }
+        persistProgrammes()
+    }
+
+    fun reorderZonesInProgramme(fromIndex: Int, toIndex: Int) {
+        if (fromIndex == toIndex) return
+        _uiState.update { state ->
+            val programmeId = state.editingProgrammeId ?: return@update state
+            val programme = state.programmes.find { it.id == programmeId } ?: return@update state
+            if (fromIndex !in programme.zones.indices || toIndex !in programme.zones.indices) return@update state
+            val zones = programme.zones.toMutableList()
+            zones.add(toIndex, zones.removeAt(fromIndex))
+            val updated = programme.copy(zones = zones)
+            state.copy(programmes = state.programmes.map { if (it.id == programmeId) updated else it })
+        }
+        persistProgrammes()
+    }
+
+    private fun persistProgrammes() {
+        viewModelScope.launch {
+            programmeRepository?.saveAll(_uiState.value.programmes)
         }
     }
 
@@ -689,7 +923,7 @@ class MainViewModel(
         bleManager?.testHapticPattern(deviceId, pattern)
     }
 
-    fun testAudioBroadcast(audioEvent: Byte = BleManager.AUDIO_TRAINING_START, volume: Int = 90) {
+    fun testAudioBroadcast(audioEvent: Byte = BleManager.AUDIO_SESSION_START_BEEP, volume: Int = 90) {
         Log.d(TAG, "=== TEST AUDIO BROADCAST ===")
         Log.d(TAG, "Audio Event: 0x${String.format("%02X", audioEvent)}, Volume: $volume")
         Log.d(TAG, "Connected devices: ${_uiState.value.devices.filter { it.status == DeviceStatus.Connected }.size}")
@@ -843,7 +1077,7 @@ class MainViewModel(
 
             // Audio: Training start announcement
             audioManager?.announceTrainingStart(state.zones.size)
-            broadcastAudioPrompt(BleManager.AUDIO_TRAINING_START, 100)
+            broadcastAudioPrompt(BleManager.AUDIO_SESSION_START_BEEP, 100)
         }
     }
 
@@ -885,7 +1119,6 @@ class MainViewModel(
 
         // Audio: Pause announcement
         audioManager?.announceTrainingPaused()
-        broadcastAudioPrompt(BleManager.AUDIO_PAUSE, 70)
     }
 
     fun resumeTrainingSession() {
@@ -914,12 +1147,13 @@ class MainViewModel(
 
         // Audio: Resume announcement
         audioManager?.announceTrainingResumed()
-        broadcastAudioPrompt(BleManager.AUDIO_RESUME, 90)
     }
 
     fun stopTrainingSession() {
         val state = _uiState.value
         if (!state.trainingSession.isActive) return
+        pacerLastCatchReceivedMs = null
+        syncLatencyAccumulator.clear()
 
         _uiState.update {
             it.copy(
@@ -939,6 +1173,9 @@ class MainViewModel(
         // Disable stroke detection on pacer
         val pacer = state.devices.find { it.seat == 1 && it.status == DeviceStatus.Connected }
         pacer?.let { disableStrokeDetection(it.id) }
+
+        // Reset coaching engine so post-session stray events don't trigger feedback
+        coachingEngine.reset()
 
         // Save session data to database
         viewModelScope.launch {
