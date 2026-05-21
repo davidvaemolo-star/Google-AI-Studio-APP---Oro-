@@ -23,8 +23,8 @@
 #include <Adafruit_DRV2605.h>
 #include <math.h>
 #include "LSM6DS3.h"  // Use Seeed_Arduino_LSM6DS3 library
-#include "audio_i2s.h"  // I2S audio playback for MAX98357A
-#include "audio_prompts.h"  // Voice prompt audio data
+#include "audio_i2s.h"   // I2S audio playback for MAX98357A
+#include "audio_qspi.h"  // Voice prompts stored on 2 MB QSPI flash
 
 // ============================================================================
 // HARDWARE CONFIGURATION
@@ -343,6 +343,13 @@ void setup() {
     Serial.println("I2S audio initialized successfully");
   } else {
     Serial.println("WARNING: Failed to initialize I2S audio - continuing without audio");
+  }
+
+  // Initialize QSPI flash audio (voice prompts)
+  if (qspiAudio.begin()) {
+    Serial.println("QSPI audio ready");
+  } else {
+    Serial.println("WARNING: QSPI audio not provisioned - run generate_qspi_binary.py then flash audio_qspi.bin");
   }
 
   // Initialize BLE
@@ -1115,100 +1122,46 @@ void playSummaryTone() {
 
 void playAudioEvent(uint8_t audioEvent, uint8_t volume) {
   Serial.print("Audio event: 0x");
-  Serial.print(audioEvent, HEX);
-  Serial.print(" (");
+  Serial.println(audioEvent, HEX);
 
-  // Select audio buffer and size based on event
-  const int16_t* audioData = nullptr;
-  uint32_t audioSize = 0;
-
+  // Synthesised tone events – handled without QSPI
   switch (audioEvent) {
     case AUDIO_SESSION_START_BEEP:
-      Serial.println("Playing: session start beeps");
       playSessionStartBeeps();
       return;
-
     case AUDIO_SET_CHANGEOVER_BEEP:
-      Serial.println("Playing: set changeover beep");
       playSetChangeover();
       return;
-
-    case AUDIO_POWER_ON:
-      Serial.println("Playing: power on (Oro)");
-      audioData = audio_prompt_power_on;
-      audioSize = audio_prompt_power_on_SIZE;
-      break;
-
-    case AUDIO_LAST_SET:
-      Serial.println("Playing: last set");
-      audioData = audio_prompt_last_set;
-      audioSize = audio_prompt_last_set_SIZE;
-      break;
-
-    case AUDIO_NEXT_SET_LOW:
-      Serial.println("Playing: next set low");
-      audioData = audio_prompt_next_set_low;
-      audioSize = audio_prompt_next_set_low_SIZE;
-      break;
-
-    case AUDIO_NEXT_SET_MEDIUM:
-      Serial.println("Playing: next set medium");
-      audioData = audio_prompt_next_set_medium;
-      audioSize = audio_prompt_next_set_medium_SIZE;
-      break;
-
-    case AUDIO_NEXT_SET_HIGH:
-      Serial.println("Playing: next set high");
-      audioData = audio_prompt_next_set_high;
-      audioSize = audio_prompt_next_set_high_SIZE;
-      break;
-
-    case AUDIO_SUMMARY_POOR_LIGHT:
-    case AUDIO_SUMMARY_POOR_MODERATE:
-    case AUDIO_SUMMARY_POOR_STRONG:
-    case AUDIO_SUMMARY_POOR_MAXIMUM:
-    case AUDIO_SUMMARY_GOOD_LIGHT:
-    case AUDIO_SUMMARY_GOOD_MODERATE:
-    case AUDIO_SUMMARY_GOOD_STRONG:
-    case AUDIO_SUMMARY_GOOD_MAXIMUM:
-    case AUDIO_SUMMARY_EXCELLENT_LIGHT:
-    case AUDIO_SUMMARY_EXCELLENT_MODERATE:
-    case AUDIO_SUMMARY_EXCELLENT_STRONG:
-    case AUDIO_SUMMARY_EXCELLENT_MAXIMUM:
-      Serial.println("Playing: session summary tone");
-      playSummaryTone();
-      return;
-
     default:
-      Serial.println("Unknown audio event ID");
-      return;
+      break;
   }
 
-  Serial.print(") at volume ");
-  Serial.println(volume);
-
-  // Play voice prompt from flash memory
-  if (audioData != nullptr && audioSize > 0) {
-    // Debug: Print pointer address and first few samples
-    Serial.print("Audio data pointer: 0x");
-    Serial.println((uint32_t)audioData, HEX);
-    Serial.print("Audio size: ");
-    Serial.println(audioSize);
-
-    // Try reading samples directly from different offsets (nRF52 reads flash directly)
-    Serial.print("Direct read test - Sample [0]: ");
-    Serial.println(audioData[0]);
-    Serial.print("Direct read test - Sample [500]: ");
-    Serial.println(audioData[500]);
-    Serial.print("Direct read test - Sample [2000]: ");
-    Serial.println(audioData[2000]);
-    Serial.print("Direct read test - Sample [3600]: ");
-    Serial.println(audioData[3600]);
-
-    audioPlayer.playBuffer(audioData, audioSize, volume);
-  } else {
-    Serial.println("ERROR: No audio data for this event!");
+  // All remaining events are voice prompts stored on QSPI flash
+  int8_t qspiIdx = audioEventToQSPIIndex(audioEvent);
+  if (qspiIdx < 0) {
+    Serial.println("WARNING: unknown audio event");
+    return;
   }
+
+  if (!qspiAudio.isValid()) {
+    Serial.println("WARNING: QSPI audio not provisioned – skipping voice prompt");
+    return;
+  }
+
+  QSPIPromptEntry entry;
+  if (!qspiAudio.getPromptInfo((uint8_t)qspiIdx, entry)) {
+    Serial.println("ERROR: invalid QSPI prompt index");
+    return;
+  }
+
+  Serial.print("Streaming QSPI prompt ");
+  Serial.print(qspiIdx);
+  Serial.print(": offset=0x");
+  Serial.print(entry.byteOffset, HEX);
+  Serial.print(", samples=");
+  Serial.println(entry.sampleCount);
+
+  audioPlayer.playStream(qspiAudio, entry.byteOffset, entry.sampleCount, volume);
 }
 
 // ============================================================================

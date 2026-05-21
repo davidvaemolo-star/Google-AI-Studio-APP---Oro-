@@ -25,6 +25,8 @@
 
 #include <Arduino.h>
 
+class AudioQSPI;  // Forward declaration – implemented in audio_qspi.h
+
 // Pin definitions - Use ACTUAL GPIO NUMBERS from nRF52840 chip
 // XIAO nRF52840 Sense PLUS - Dedicated I2S pins on CASTELLATED HOLES (back of board)
 // P1.01 = Port 1, Pin 1 = GPIO 33 (Port 1 pins = 32 + pin number)
@@ -66,12 +68,25 @@ public:
     void playMelody(const uint16_t* frequencies, const uint16_t* durations, uint8_t count, uint8_t volume);
 
     /**
-     * Play pre-recorded audio from flash memory (PROGMEM)
-     * @param buffer Pointer to audio samples in flash (PROGMEM)
-     * @param sampleCount Number of samples in buffer
+     * Play pre-recorded audio from an in-memory buffer
+     * @param buffer Pointer to int16_t PCM samples
+     * @param sampleCount Number of samples
      * @param volume Volume level (0-100)
      */
     void playBuffer(const int16_t* buffer, uint32_t sampleCount, uint8_t volume);
+
+    /**
+     * Stream a voice prompt directly from QSPI flash.
+     * Reads audio in AUDIO_BUFFER_SIZE chunks, interleaving QSPI reads and
+     * I2S transmission so P0.19 (shared SCK/BCLK) is never driven by both
+     * peripherals simultaneously.
+     * @param qspi      Initialised AudioQSPI instance
+     * @param byteOffset Absolute byte address of the prompt in QSPI flash
+     * @param sampleCount Total int16_t samples in the prompt
+     * @param volume    Volume level (0-100)
+     */
+    void playStream(AudioQSPI& qspi, uint32_t byteOffset,
+                    uint32_t sampleCount, uint8_t volume);
 
     /**
      * Stop I2S playback and disable peripheral

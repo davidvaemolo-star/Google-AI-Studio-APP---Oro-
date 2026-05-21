@@ -6,6 +6,7 @@
  */
 
 #include "audio_i2s.h"
+#include "audio_qspi.h"
 #include <nrf.h>
 #include <math.h>
 #include <nrf_clock.h>
@@ -446,4 +447,70 @@ void AudioI2S::resume() {
 
 bool AudioI2S::isPlaying() {
     return playing;
+}
+
+void AudioI2S::playStream(AudioQSPI& qspi, uint32_t byteOffset,
+                          uint32_t sampleCount, uint8_t volume) {
+    if (!initialized || sampleCount == 0) {
+        Serial.println("ERROR: playStream – not initialised or zero samples");
+        return;
+    }
+
+    volume = constrain(volume, 0, 100);
+    float volumeScale = volume / 100.0f;
+
+    Serial.print("Streaming from QSPI: ");
+    Serial.print(sampleCount);
+    Serial.print(" samples (");
+    Serial.print((sampleCount * 1000.0f) / SAMPLE_RATE, 0);
+    Serial.print(" ms) vol=");
+    Serial.println(volume);
+
+    playing = true;
+
+    // Temporary read buffer on stack: 256 × 2 bytes = 512 bytes
+    int16_t readBuf[AUDIO_BUFFER_SIZE];
+
+    uint32_t samplesRemaining = sampleCount;
+    uint32_t readOffset       = byteOffset;
+
+    while (samplesRemaining > 0) {
+        uint16_t chunkSize =
+            (uint16_t)min(samplesRemaining, (uint32_t)AUDIO_BUFFER_SIZE);
+
+        // ── Phase 1: QSPI read (I2S is idle → P0.19 safe for QSPI SCK) ──────
+        qspi.readSamples(readOffset, readBuf, chunkSize);
+        // readSamples() calls NRF_QSPI->TASKS_DEACTIVATE before returning,
+        // so P0.19 is released before we drive it as I2S BCLK.
+        readOffset += (uint32_t)chunkSize * 2;
+
+        // ── Phase 2: pack into stereo I2S DMA format ──────────────────────────
+        for (uint16_t i = 0; i < chunkSize; i++) {
+            int16_t s = (int16_t)(readBuf[i] * volumeScale);
+            uint16_t u = (uint16_t)s;
+            currentBuffer[i] = ((uint32_t)u << 16) | u;  // L = R (mono→stereo)
+        }
+
+        // ── Phase 3: play chunk via I2S ───────────────────────────────────────
+        NRF_I2S->EVENTS_STOPPED  = 0;
+        NRF_I2S->EVENTS_TXPTRUPD = 0;
+        NRF_I2S->TXD.PTR         = (uint32_t)currentBuffer;
+        NRF_I2S->RXTXD.MAXCNT    = chunkSize;
+        NRF_I2S->TASKS_START      = 1;
+
+        // Wait for the full chunk to clock out (+ 2 ms margin)
+        uint32_t durationMs = ((uint32_t)chunkSize * 1000UL) / SAMPLE_RATE;
+        if (durationMs == 0) durationMs = 1;
+        delay(durationMs + 2);
+
+        // ── Phase 4: stop I2S to release P0.19 before next QSPI read ─────────
+        NRF_I2S->TASKS_STOP = 1;
+        uint32_t t = millis() + 20;
+        while (NRF_I2S->EVENTS_STOPPED == 0 && millis() < t) yield();
+
+        samplesRemaining -= chunkSize;
+    }
+
+    playing = false;
+    Serial.println("QSPI stream complete");
 }
