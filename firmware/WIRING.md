@@ -36,6 +36,21 @@
 | Red (+) | BAT+ | Battery positive (3.7V) |
 | Black (-) | BAT- (GND) | Battery negative/ground |
 
+### RGB LED → XIAO nRF52840 Sense Plus
+
+Common-anode LED: the common anode connects to 3.3V; each colour channel is driven **Active LOW** (pull pin LOW to illuminate, HIGH to extinguish).
+
+| LED Pin | XIAO Pin | nRF52840 GPIO | Description |
+|---------|----------|---------------|-------------|
+| Common Anode (+) | 3.3V | — | Shared anode to 3.3V |
+| Red Cathode | D9 (pin 9) | P1.14 | Red channel — Active LOW |
+| Green Cathode | D8 (pin 8) | P1.13 | Green channel — Active LOW |
+| Blue Cathode | D7 (pin 7) | P1.12 | Blue channel — Active LOW |
+
+> ⚠️ **Polarity note:** This is a common-**anode** LED. Logic is inverted vs a common-cathode LED — `digitalWrite(pin, LOW)` turns the channel ON. Forgetting this is a common wiring mistake.
+
+> Add a current-limiting resistor (68–100 Ω) in series with each cathode channel to protect the nRF52840 GPIO pins (max 15 mA per pin).
+
 ### Optional: MAX98357 I2S Amplifier → XIAO nRF52840
 
 | MAX98357 Pin | XIAO Pin | Description |
@@ -392,8 +407,11 @@ BAT-│   -       GND │
 **★ Active Pins (Current Firmware):**
 - D4 = I2C SDA (DRV2605L)
 - D5 = I2C SCL (DRV2605L)
+- D7 = LED Blue cathode (Active LOW, common-anode RGB)
+- D8 = LED Green cathode (Active LOW, common-anode RGB)
+- D9 = LED Red cathode (Active LOW, common-anode RGB)
 - A0 = Battery monitor (internal)
-- 3.3V = Power out
+- 3.3V = Power out + LED common anode
 - GND = Common ground
 - BAT+/BAT- = Battery input
 
