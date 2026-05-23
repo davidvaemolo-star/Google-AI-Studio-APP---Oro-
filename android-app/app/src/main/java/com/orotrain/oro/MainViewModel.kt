@@ -266,14 +266,6 @@ class MainViewModel(
         }
     }
 
-    fun setLedColor(deviceId: String, r: Int, g: Int, b: Int) {
-        bleManager?.sendLedColor(deviceId, r, g, b)
-    }
-
-    fun setLedAutoMode(deviceId: String) {
-        bleManager?.sendLedAutoMode(deviceId)
-    }
-
     private fun processStrokeForTraining(
         session: TrainingSessionState,
         currentZone: Zone,

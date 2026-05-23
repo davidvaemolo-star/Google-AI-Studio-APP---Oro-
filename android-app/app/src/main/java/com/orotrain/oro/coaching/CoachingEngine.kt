@@ -20,48 +20,18 @@ class CoachingEngine(
         private const val TAG = "CoachingEngine"
 
         // Feedback intervals (minimum time between feedback of each type)
-        private const val LED_UPDATE_INTERVAL_MS = 500L     // LED color update rate (2Hz)
         private const val HAPTIC_MIN_INTERVAL_MS = 5000L    // Min 5s between haptic coaching cues
         private const val AUDIO_MIN_INTERVAL_MS = 20000L    // Min 20s between audio coaching (speech is intrusive)
     }
 
-    var ledFeedbackEnabled = true
     var hapticFeedbackEnabled = true
     var audioFeedbackEnabled = true
 
-    private var lastLedUpdateTime = 0L
     private var lastHapticTime = 0L
     private var lastAudioTime = 0L
 
-    /**
-     * Called on every FSR update to drive LED color feedback.
-     * LED reflects grip force in real-time:
-     *   0-40%  = green (relaxed, efficient grip)
-     *   40-70% = yellow gradient (moderate, watch it)
-     *   70-100% = red (over-gripping, fatigue/injury risk)
-     */
     fun onFsrUpdate(deviceId: String, forcePercent: Int) {
-        if (!ledFeedbackEnabled || bleManager == null) return
-
-        val now = System.currentTimeMillis()
-        if (now - lastLedUpdateTime < LED_UPDATE_INTERVAL_MS) return
-        lastLedUpdateTime = now
-
-        val (r, g, b) = when {
-            forcePercent < 40 -> Triple(0, 255, 0)       // Green — good
-            forcePercent < 70 -> {
-                // Smooth gradient: green → yellow → orange
-                val t = (forcePercent - 40) / 30f
-                Triple(
-                    (255 * t).toInt().coerceIn(0, 255),
-                    (255 * (1f - t * 0.5f)).toInt().coerceIn(0, 255),
-                    0
-                )
-            }
-            else -> Triple(255, 0, 0)                      // Red — over-gripping
-        }
-
-        bleManager.sendLedColor(deviceId, r, g, b)
+        // LED feedback removed — LED is firmware-driven (see ADR-0009)
     }
 
     /**
@@ -136,7 +106,6 @@ class CoachingEngine(
     }
 
     fun reset() {
-        lastLedUpdateTime = 0L
         lastHapticTime = 0L
         lastAudioTime = 0L
         Log.d(TAG, "CoachingEngine reset")

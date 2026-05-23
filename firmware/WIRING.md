@@ -38,18 +38,19 @@
 
 ### RGB LED → XIAO nRF52840 Sense Plus
 
-Common-anode LED: the common anode connects to 3.3V; each colour channel is driven **Active LOW** (pull pin LOW to illuminate, HIGH to extinguish).
+LED part: **Kingbright APFA3010SEKJ3ZGKQBKC** (common-cathode SMD RGB). Common cathode connects to GND; each anode is driven **Active HIGH** by the MCU.
 
-| LED Pin | XIAO Pin | nRF52840 GPIO | Description |
+| LED Pad | XIAO Pin | nRF52840 GPIO | Description |
 |---------|----------|---------------|-------------|
-| Common Anode (+) | 3.3V | — | Shared anode to 3.3V |
-| Red Cathode | D9 (pin 9) | P1.14 | Red channel — Active LOW |
-| Green Cathode | D8 (pin 8) | P1.13 | Green channel — Active LOW |
-| Blue Cathode | D7 (pin 7) | P1.12 | Blue channel — Active LOW |
+| Pad 1 — Red Anode | D9 (P1.14) | P1.14 | Red channel — Active HIGH |
+| Pad 2 — Common Cathode | GND | — | Shared cathode to GND |
+| Pad 3 — Green Anode | D8 (P1.13) | P1.13 | Green channel — Active HIGH |
+| Pad 4 — Blue Anode | D7 (P1.12) | P1.12 | Blue channel — Active HIGH |
 
-> ⚠️ **Polarity note:** This is a common-**anode** LED. Logic is inverted vs a common-cathode LED — `digitalWrite(pin, LOW)` turns the channel ON. Forgetting this is a common wiring mistake.
-
-> Add a current-limiting resistor (68–100 Ω) in series with each cathode channel to protect the nRF52840 GPIO pins (max 15 mA per pin).
+> Add a current-limiting resistor in series with each anode channel:
+> - Red (Vf 2.2V): **51–68 Ω** at 3.3V supply
+> - Green (Vf 3.3V): **0–10 Ω** — supply barely exceeds Vf; green/blue may be dim at 3.3V
+> - Blue (Vf 3.3V): **0–10 Ω** — same constraint as green
 
 ### Optional: MAX98357 I2S Amplifier → XIAO nRF52840
 
@@ -407,11 +408,11 @@ BAT-│   -       GND │
 **★ Active Pins (Current Firmware):**
 - D4 = I2C SDA (DRV2605L)
 - D5 = I2C SCL (DRV2605L)
-- D7 = LED Blue cathode (Active LOW, common-anode RGB)
-- D8 = LED Green cathode (Active LOW, common-anode RGB)
-- D9 = LED Red cathode (Active LOW, common-anode RGB)
+- D7 = LED Blue anode (Active HIGH, common-cathode RGB)
+- D8 = LED Green anode (Active HIGH, common-cathode RGB)
+- D9 = LED Red anode (Active HIGH, common-cathode RGB)
 - A0 = Battery monitor (internal)
-- 3.3V = Power out + LED common anode
+- 3.3V = Power out
 - GND = Common ground
 - BAT+/BAT- = Battery input
 

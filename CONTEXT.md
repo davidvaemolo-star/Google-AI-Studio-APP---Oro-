@@ -1,6 +1,6 @@
 # Oro Haptic Paddle
 
-A wrist-mounted haptic training system for OC6 outrigger canoe crews. Devices worn by each paddler vibrate in sync with the pacer's stroke to improve crew synchronization.
+A haptic training system for OC6 outrigger canoe crews. Each device is built into the paddle's t-handle; it vibrates in sync with the pacer's stroke to improve crew synchronization.
 
 ## Language
 
@@ -36,8 +36,8 @@ Strokes Per Minute — the pacing rate for a zone (30–80 range).
 ### Devices and roles
 
 **Device**:
-A single wrist-mounted nRF52840 hardware unit worn by one paddler.
-_Avoid_: node, unit, peripheral
+A single nRF52840 hardware unit built into the t-handle of one paddler's paddle.
+_Avoid_: node, unit, peripheral, wrist device
 
 **Canoe**:
 One OC6 outrigger canoe with up to 6 seats. The system supports up to 2 canoes simultaneously on one Training Controller.
@@ -155,7 +155,7 @@ _Avoid_: Android app, mobile app
 - **Sync Rating boundaries**: Poor/Good/Excellent split at 50/80 are placeholders — to be validated against field data.
 - **Power Range boundaries**: Light/Moderate/Strong/Maximum split at 25%/50%/75% are placeholders — to be validated against field data.
 - **Sync Score thresholds**: The 50ms (perfect) and 300ms (zero) latency bounds are placeholders — not validated against biomechanical perception thresholds or real BLE round-trip measurements.
-- **FSR in training logic**: Hardware is wired and characteristic 0008 streams data, but FSR is not yet used in training logic. Planned: (1) secondary Catch detection confirmation, (2) stroke quality metric feeding Power Range.
+- **FSR secondary Catch confirmation**: `sessionAverageFsrPeak()` now feeds Power Range in the Session Summary. Remaining: use Top Hand Pressure as a secondary confirmation gate for Catch detection.
 
 ## Known constraints to resolve
 

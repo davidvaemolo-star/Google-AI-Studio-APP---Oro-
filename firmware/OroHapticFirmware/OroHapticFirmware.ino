@@ -44,6 +44,12 @@
 #define BATTERY_PIN A0
 #define BATTERY_READ_INTERVAL 30000  // Read every 30 seconds
 
+// RGB LED Pins (external common-cathode LED — Active HIGH)
+// D9=P1.14, D8=P1.13, D7=P1.12 — nRF52840 port 1 pins use offset 32
+#define LED_R_PIN 46  // D9 = P1.14 (32+14)
+#define LED_G_PIN 45  // D8 = P1.13 (32+13)
+#define LED_B_PIN 44  // D7 = P1.12 (32+12)
+
 // FSR (Force Sensitive Resistor) Configuration
 #define FSR_PIN A3                    // Analog pin for FSR
 #define FSR_READ_INTERVAL_MS 50       // Read every 50ms (20Hz) - sufficient for grip monitoring
@@ -81,7 +87,6 @@ AudioI2S audioPlayer;
 #define CALIBRATION_CHAR_UUID       "12340006-1234-5678-1234-56789abcdef0"  // Write/Notify - calibration control
 #define AUDIO_CONTROL_CHAR_UUID     "12340007-1234-5678-1234-56789abcdef0"  // Write - trigger audio prompts
 #define FSR_DATA_CHAR_UUID          "12340008-1234-5678-1234-56789abcdef0"  // Notify - FSR force data
-#define LED_CONTROL_CHAR_UUID       "12340009-1234-5678-1234-56789abcdef0"  // Write - LED control
 
 // Standard Battery Service
 #define BATTERY_SERVICE_UUID        "180F"
@@ -128,10 +133,6 @@ BLECharacteristic audioControlChar = BLECharacteristic(AUDIO_CONTROL_CHAR_UUID);
 // FSR Data: Notify only
 // Format: [force_percent(1 byte)][raw_adc(2 bytes LE)][threshold_triggered(1 byte)]
 BLECharacteristic fsrDataChar = BLECharacteristic(FSR_DATA_CHAR_UUID);
-
-// LED Control: Write only
-// Format: [command(1 byte)][r(1 byte)][g(1 byte)][b(1 byte)][param(1 byte)]
-BLECharacteristic ledControlChar = BLECharacteristic(LED_CONTROL_CHAR_UUID);
 
 // ============================================================================
 // DEVICE STATE MANAGEMENT
@@ -236,6 +237,7 @@ struct TrainingState {
 
 TrainingConfig trainingConfig = {0, 0, 0, 0, false};
 TrainingState trainingState = {STATE_IDLE, 0, 0, 100, 0, 0};
+bool isPacer = false;  // Set via Zone Settings write (role byte)
 
 // Stroke Detection State
 struct StrokeDetectionState {
@@ -312,6 +314,11 @@ void setup() {
   Serial.println("=== Oro Haptic Paddle Firmware ===");
   Serial.println("Hardware: XIAO nRF52840 Sense + DRV2605L");
   Serial.println();
+
+  // Initialize RGB LED (common-cathode: LOW = off)
+  pinMode(LED_R_PIN, OUTPUT); digitalWrite(LED_R_PIN, LOW);
+  pinMode(LED_G_PIN, OUTPUT); digitalWrite(LED_G_PIN, LOW);
+  pinMode(LED_B_PIN, OUTPUT); digitalWrite(LED_B_PIN, LOW);
 
   // Initialize I2C with custom pins
   Wire.begin();
@@ -476,7 +483,7 @@ bool initializeBLE() {
   // Zone Settings Characteristic (Write)
   zoneSettingsChar.setProperties(CHR_PROPS_WRITE);
   zoneSettingsChar.setPermission(SECMODE_OPEN, SECMODE_OPEN);
-  zoneSettingsChar.setFixedLen(6);
+  zoneSettingsChar.setFixedLen(7);  // [strokes(2)][sets(1)][spm(2)][zone_color(1)][role(1)]
   zoneSettingsChar.setWriteCallback(onZoneSettingsWrite);
   zoneSettingsChar.begin();
 
@@ -517,13 +524,6 @@ bool initializeBLE() {
   fsrDataChar.setPermission(SECMODE_OPEN, SECMODE_NO_ACCESS);
   fsrDataChar.setFixedLen(4);  // [forcePercent(1)][rawAdc(2 LE)][thresholdTriggered(1)]
   fsrDataChar.begin();
-
-  // LED Control Characteristic (Write)
-  ledControlChar.setProperties(CHR_PROPS_WRITE);
-  ledControlChar.setPermission(SECMODE_OPEN, SECMODE_OPEN);
-  ledControlChar.setFixedLen(5);  // [command(1)][r(1)][g(1)][b(1)][param(1)]
-  ledControlChar.setWriteCallback(onLedControlWrite);
-  ledControlChar.begin();
 
   // Configure Battery Service
   batteryService.begin();
@@ -927,6 +927,13 @@ void loop() {
     handleTrainingLoop();
   }
 
+  // Update LED state indicator (~20ms throttle)
+  static unsigned long lastLedUpdate = 0;
+  if (millis() - lastLedUpdate >= 20) {
+    lastLedUpdate = millis();
+    updateLedState();
+  }
+
   // Small delay to prevent tight loop
   delay(1);
 }
@@ -1323,8 +1330,9 @@ void onAudioControlWrite(uint16_t conn_hdl, BLECharacteristic* chr, uint8_t* dat
 }
 
 void onZoneSettingsWrite(uint16_t conn_hdl, BLECharacteristic* chr, uint8_t* data, uint16_t len) {
-  // Format: [strokes(2)][sets(1)][spm(2)][zone_color(1)]
-  if (len < 6) {
+  // Format: [strokes(2)][sets(1)][spm(2)][zone_color(1)][role(1)]
+  // role: 0x00 = Follower, 0x01 = Pacer
+  if (len < 7) {
     Serial.println("ERROR: Invalid zone settings data");
     return;
   }
@@ -1333,6 +1341,7 @@ void onZoneSettingsWrite(uint16_t conn_hdl, BLECharacteristic* chr, uint8_t* dat
   trainingConfig.totalSets = data[2];
   trainingConfig.strokesPerMinute = data[3] | (data[4] << 8);
   trainingConfig.zoneColor = data[5];
+  isPacer = (data[6] == 0x01);
   trainingConfig.isActive = true;
 
   Serial.println("=== Zone Settings Received ===");
@@ -1440,27 +1449,67 @@ void sendFsrData() {
   fsrDataChar.notify(data, 4);
 }
 
-void onLedControlWrite(uint16_t conn_hdl, BLECharacteristic* chr, uint8_t* data, uint16_t len) {
-  if (len < 4) return;
+void updateLedState() {
+  uint8_t r = 0, g = 0, b = 0;
+  bool pulsing = false;
+  uint16_t pulsePeriod = 2000;
 
-  uint8_t command = data[0];
-  uint8_t r = data[1];
-  uint8_t g = data[2];
-  uint8_t b = data[3];
-  uint8_t param = (len >= 5) ? data[4] : 0;
+  if (!Bluefruit.connected()) {
+    // Advertising: blue slow pulse
+    b = 255;
+    pulsing = true;
+    pulsePeriod = 2000;
+  } else {
+    switch (trainingState.deviceState) {
+      case STATE_IDLE:
+        b = 255;  // blue solid
+        break;
+      case STATE_READY:
+        g = 255;  // green solid
+        break;
+      case STATE_CALIBRATING:
+        r = 255; g = 150;  // yellow pulse
+        pulsing = true;
+        pulsePeriod = 1000;
+        break;
+      case STATE_TRAINING:
+        if (isPacer) {
+          r = 255; g = 255; b = 255;  // white fast pulse
+        } else {
+          g = 255;  // green fast pulse
+        }
+        pulsing = true;
+        pulsePeriod = 500;
+        break;
+      case STATE_PAUSED:
+        r = 255; g = 150;  // yellow solid
+        break;
+      case STATE_COMPLETE:
+        r = 255; g = 255; b = 255;  // white solid
+        break;
+      case STATE_ERROR:
+      default:
+        r = 255;  // red solid
+        break;
+    }
+  }
 
-  Serial.print("LED control: cmd=0x");
-  Serial.print(command, HEX);
-  Serial.print(" R=");
-  Serial.print(r);
-  Serial.print(" G=");
-  Serial.print(g);
-  Serial.print(" B=");
-  Serial.print(b);
-  Serial.print(" param=");
-  Serial.println(param);
+  if (pulsing) {
+    unsigned long phase = millis() % (unsigned long)pulsePeriod;
+    float brightness;
+    if (phase < pulsePeriod / 2) {
+      brightness = (float)phase / (float)(pulsePeriod / 2);
+    } else {
+      brightness = 1.0f - (float)(phase - pulsePeriod / 2) / (float)(pulsePeriod / 2);
+    }
+    r = (uint8_t)(r * brightness);
+    g = (uint8_t)(g * brightness);
+    b = (uint8_t)(b * brightness);
+  }
 
-  // TODO: Drive actual LED hardware (NeoPixel, etc.) when connected
+  analogWrite(LED_R_PIN, r);
+  analogWrite(LED_G_PIN, g);
+  analogWrite(LED_B_PIN, b);
 }
 
 // ============================================================================

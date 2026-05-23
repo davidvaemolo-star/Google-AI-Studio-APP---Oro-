@@ -56,7 +56,6 @@ class BleManager(private val context: Context) {
         val CALIBRATION_UUID = UUID.fromString("12340006-1234-5678-1234-56789abcdef0")
         val AUDIO_CONTROL_UUID = UUID.fromString("12340007-1234-5678-1234-56789abcdef0")
         val FSR_DATA_UUID = UUID.fromString("12340008-1234-5678-1234-56789abcdef0")
-        val LED_CONTROL_UUID = UUID.fromString("12340009-1234-5678-1234-56789abcdef0")
 
         // Standard BLE Battery Service UUIDs
         val BATTERY_SERVICE_UUID = UUID.fromString("0000180F-0000-1000-8000-00805f9b34fb")
@@ -142,11 +141,6 @@ class BleManager(private val context: Context) {
         const val CAL_CMD_SET_THRESHOLD: Byte = 0x03
         const val CAL_CMD_GET_STATUS: Byte = 0x04
 
-        // LED Commands
-        const val LED_CMD_SET_COLOR: Byte = 0x01
-        const val LED_CMD_SET_PATTERN: Byte = 0x02
-        const val LED_CMD_SET_BRIGHTNESS: Byte = 0x03
-        const val LED_CMD_AUTO_MODE: Byte = 0x04
     }
 
     private val bluetoothManager: BluetoothManager =
@@ -603,14 +597,6 @@ class BleManager(private val context: Context) {
                     Log.w(TAG, "  ✗ FSR Data characteristic NOT FOUND for $deviceId")
                 }
 
-                // Verify LED Control characteristic is available
-                val ledControlChar = hapticService.getCharacteristic(LED_CONTROL_UUID)
-                if (ledControlChar != null) {
-                    Log.d(TAG, "  ✓ LED Control characteristic FOUND for $deviceId")
-                } else {
-                    Log.w(TAG, "  ✗ LED Control characteristic NOT FOUND for $deviceId")
-                }
-
                 // Read battery level
                 val batteryService = gatt.getService(BATTERY_SERVICE_UUID)
                 val batteryChar = batteryService?.getCharacteristic(BATTERY_LEVEL_CHAR_UUID)
@@ -947,20 +933,22 @@ class BleManager(private val context: Context) {
     // Haptic control functions
 
     @SuppressLint("MissingPermission")
-    fun configureTrainingZone(deviceId: String, strokes: Int, sets: Int, spm: Int, zoneColor: Byte = ZONE_ENDURANCE): Boolean {
+    fun configureTrainingZone(deviceId: String, strokes: Int, sets: Int, spm: Int, zoneColor: Byte = ZONE_ENDURANCE, isPacer: Boolean = false): Boolean {
         if (!hasRequiredPermissions()) return false
 
         val gatt = deviceGattMap[deviceId] ?: return false
         val hapticService = gatt.getService(ORO_HAPTIC_SERVICE_UUID) ?: return false
         val zoneSettingsChar = hapticService.getCharacteristic(ZONE_SETTINGS_UUID) ?: return false
 
-        // Format: [strokes LSB, strokes MSB, sets, SPM LSB, SPM MSB, zone color]
-        val data = ByteBuffer.allocate(6).apply {
+        // Format: [strokes LSB, strokes MSB, sets, SPM LSB, SPM MSB, zone color, role]
+        // role: 0x00 = Follower, 0x01 = Pacer
+        val data = ByteBuffer.allocate(7).apply {
             order(ByteOrder.LITTLE_ENDIAN)
             putShort(strokes.toShort())
             put(sets.toByte())
             putShort(spm.toShort())
             put(zoneColor)
+            put(if (isPacer) 0x01.toByte() else 0x00.toByte())
         }.array()
 
         val result = writeCharacteristicCompat(
@@ -1255,59 +1243,6 @@ class BleManager(private val context: Context) {
             Log.d(TAG, "Audio command sent successfully to $deviceId: event=0x${String.format("%02X", audioEvent)}, volume=$clampedVolume")
         } else {
             Log.w(TAG, "Audio command write failed for $deviceId")
-        }
-
-        return result
-    }
-
-    // LED control functions
-
-    @SuppressLint("MissingPermission")
-    fun sendLedColor(deviceId: String, r: Int, g: Int, b: Int): Boolean {
-        return sendLedCommand(deviceId, LED_CMD_SET_COLOR, r.toByte(), g.toByte(), b.toByte(), 0)
-    }
-
-    @SuppressLint("MissingPermission")
-    fun sendLedPattern(deviceId: String, pattern: Int): Boolean {
-        return sendLedCommand(deviceId, LED_CMD_SET_PATTERN, 0, 0, 0, pattern.toByte())
-    }
-
-    @SuppressLint("MissingPermission")
-    fun sendLedBrightness(deviceId: String, brightness: Int): Boolean {
-        return sendLedCommand(deviceId, LED_CMD_SET_BRIGHTNESS, 0, 0, 0, brightness.toByte())
-    }
-
-    @SuppressLint("MissingPermission")
-    fun sendLedAutoMode(deviceId: String): Boolean {
-        return sendLedCommand(deviceId, LED_CMD_AUTO_MODE, 0, 0, 0, 0)
-    }
-
-    @SuppressLint("MissingPermission")
-    private fun sendLedCommand(deviceId: String, command: Byte, r: Byte, g: Byte, b: Byte, param: Byte): Boolean {
-        if (!hasRequiredPermissions()) return false
-
-        val gatt = deviceGattMap[deviceId] ?: run {
-            Log.w(TAG, "sendLedCommand failed for $deviceId: GATT connection not found")
-            return false
-        }
-
-        val hapticService = gatt.getService(ORO_HAPTIC_SERVICE_UUID) ?: run {
-            Log.w(TAG, "sendLedCommand failed for $deviceId: Oro Haptic Service not found")
-            return false
-        }
-
-        val ledChar = hapticService.getCharacteristic(LED_CONTROL_UUID) ?: run {
-            Log.w(TAG, "sendLedCommand failed for $deviceId: LED Control characteristic not found")
-            return false
-        }
-
-        val data = byteArrayOf(command, r, g, b, param)
-        val result = writeCharacteristicCompat(gatt, ledChar, data, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT)
-
-        if (result) {
-            Log.d(TAG, "LED command sent to $deviceId: cmd=$command, r=$r, g=$g, b=$b, param=$param")
-        } else {
-            Log.w(TAG, "LED command write failed for $deviceId")
         }
 
         return result

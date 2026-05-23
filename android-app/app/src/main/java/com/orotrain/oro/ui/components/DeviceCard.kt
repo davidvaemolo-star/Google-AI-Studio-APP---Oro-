@@ -44,8 +44,7 @@ fun DeviceCard(
     seatRole: String? = null,
     isDragging: Boolean = false,
     onStartCalibration: ((String) -> Unit)? = null,
-    onStopCalibration: ((String) -> Unit)? = null,
-    onShowLedControl: ((String) -> Unit)? = null
+    onStopCalibration: ((String) -> Unit)? = null
 ) {
     val (statusText, buttonLabel, statusColor) = when (device.status) {
         DeviceStatus.Disconnected -> Triple("Disconnected", "Connect", Color.White.copy(alpha = 0.6f))
@@ -228,23 +227,6 @@ fun DeviceCard(
                 }
             }
 
-            // LED control button for connected devices
-            if (device.status == DeviceStatus.Connected && onShowLedControl != null) {
-                Button(
-                    onClick = { onShowLedControl.invoke(device.id) },
-                    modifier = Modifier,
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = Color(0xFF7B61FF)
-                    ),
-                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
-                ) {
-                    Text(
-                        text = "LED",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = Color.White
-                    )
-                }
-            }
         }
     }
 }

@@ -56,9 +56,7 @@ fun ConnectionScreen(
     modifier: Modifier = Modifier,
     onStartCalibration: ((String) -> Unit)? = null,
     onStopCalibration: ((String) -> Unit)? = null,
-    onSetThreshold: ((String, Float) -> Unit)? = null,
-    onSetLedColor: ((String, Int, Int, Int) -> Unit)? = null,
-    onSetLedAutoMode: ((String) -> Unit)? = null
+    onSetThreshold: ((String, Float) -> Unit)? = null
 ) {
     val connectedDevices = remember(state.devices) {
         state.devices.filter { it.status == DeviceStatus.Connected }
@@ -78,12 +76,6 @@ fun ConnectionScreen(
     // Calibration dialog state
     var calibratingDeviceId by remember { mutableStateOf<String?>(null) }
     val calibratingDevice = calibratingDeviceId?.let { deviceId ->
-        state.devices.find { it.id == deviceId }
-    }
-
-    // LED control dialog state
-    var ledControlDeviceId by remember { mutableStateOf<String?>(null) }
-    val ledControlDevice = ledControlDeviceId?.let { deviceId ->
         state.devices.find { it.id == deviceId }
     }
 
@@ -215,9 +207,6 @@ fun ConnectionScreen(
                                     onStartCalibration?.invoke(deviceId)
                                 },
                                 onStopCalibration = onStopCalibration,
-                                onShowLedControl = if (onSetLedColor != null) { deviceId ->
-                                    ledControlDeviceId = deviceId
-                                } else null,
                                 modifier = itemModifier
                             )
                         }
@@ -267,18 +256,4 @@ fun ConnectionScreen(
         )
     }
 
-    // Show LED control dialog
-    if (ledControlDevice != null) {
-        LedControlDialog(
-            deviceName = ledControlDevice.name,
-            onDismiss = { ledControlDeviceId = null },
-            onSetColor = { r, g, b ->
-                onSetLedColor?.invoke(ledControlDevice.id, r, g, b)
-            },
-            onSetAutoMode = {
-                onSetLedAutoMode?.invoke(ledControlDevice.id)
-                ledControlDeviceId = null
-            }
-        )
-    }
 }
