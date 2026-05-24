@@ -8,7 +8,6 @@ data class OroUiState(
     val editingProgrammeId: String? = null,
     val zones: List<Zone> = emptyList(),
     val isScanning: Boolean = false,
-    val isSeatOrderLocked: Boolean = true,
     val trainingSession: TrainingSessionState = TrainingSessionState()
 ) {
     val connectedDevicesCount: Int = devices.count { it.status == DeviceStatus.Connected }
@@ -19,9 +18,15 @@ data class OroUiState(
     val editingProgramme: Programme?
         get() = programmes.find { it.id == editingProgrammeId }
 
+    val allDevicesCalibrated: Boolean
+        get() = devices
+            .filter { it.status == DeviceStatus.Connected }
+            .all { it.isCalibrationComplete }
+
     val canStartTraining: Boolean
         get() = activeProgramme != null &&
                 connectedDevicesCount > 0 &&
                 zones.isNotEmpty() &&
+                allDevicesCalibrated &&
                 !trainingSession.isActive
 }
