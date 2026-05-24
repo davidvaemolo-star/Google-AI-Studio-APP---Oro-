@@ -1,5 +1,7 @@
 package com.orotrain.oro.model
 
+private val TRAILING_DIGITS = Regex("""\d+""")
+
 /**
  * Assigns [newSeat] to the device with [deviceId].
  * If another connected device already holds [newSeat], it takes [deviceId]'s old seat (swap).
@@ -16,7 +18,7 @@ internal fun swapSeats(
 
     val oldSeat = result[targetIdx].seat
     val conflictIdx = result.indexOfFirst { it.seat == newSeat && it.id != deviceId }
-    if (conflictIdx >= 0) {
+    if (conflictIdx >= 0 && oldSeat != null) {
         result[conflictIdx] = result[conflictIdx].copy(seat = oldSeat)
     }
     result[targetIdx] = result[targetIdx].copy(seat = newSeat)
@@ -35,8 +37,7 @@ internal fun autoAssignSeats(devices: List<HapticDevice>): List<HapticDevice> {
     val unseated = connected
         .filter { it.seat == null }
         .sortedBy { device ->
-            val match = Regex("""(\d+)""").find(device.name)
-            match?.groupValues?.get(1)?.toIntOrNull() ?: Int.MAX_VALUE
+            TRAILING_DIGITS.find(device.name)?.value?.toIntOrNull() ?: Int.MAX_VALUE
         }
 
     val usedSeats = seated.map { it.seat!! }.toSet()
