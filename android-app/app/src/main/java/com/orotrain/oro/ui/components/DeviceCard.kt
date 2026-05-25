@@ -1,6 +1,7 @@
 package com.orotrain.oro.ui.components
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -17,10 +18,16 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.BatteryChargingFull
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -42,7 +49,9 @@ fun DeviceCard(
     modifier: Modifier = Modifier,
     seatNumber: Int? = null,
     seatRole: String? = null,
+    seatCount: Int = 6,
     isDragging: Boolean = false,
+    onSeatChange: ((Int) -> Unit)? = null,
     onStartCalibration: ((String) -> Unit)? = null,
     onStopCalibration: ((String) -> Unit)? = null
 ) {
@@ -70,10 +79,32 @@ fun DeviceCard(
         horizontalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         if (seatNumber != null) {
-            SeatBadge(
-                number = seatNumber,
-                role = seatRole
-            )
+            var dropdownExpanded by remember { mutableStateOf(false) }
+            Box {
+                SeatBadge(
+                    number = seatNumber,
+                    role = seatRole,
+                    modifier = Modifier.clickable(enabled = onSeatChange != null) {
+                        dropdownExpanded = true
+                    }
+                )
+                DropdownMenu(
+                    expanded = dropdownExpanded,
+                    onDismissRequest = { dropdownExpanded = false }
+                ) {
+                    (1..seatCount).forEach { seat ->
+                        DropdownMenuItem(
+                            text = {
+                                Text(if (seat == 1) "Seat 1 · Pacer" else "Seat $seat")
+                            },
+                            onClick = {
+                                onSeatChange?.invoke(seat)
+                                dropdownExpanded = false
+                            }
+                        )
+                    }
+                }
+            }
         }
 
         Column(
@@ -201,8 +232,8 @@ fun DeviceCard(
                 )
             }
 
-            // Calibration button for Seat 1 (pacer)
-            if (device.status == DeviceStatus.Connected && seatNumber == 1) {
+            // Calibration button for all connected devices
+            if (device.status == DeviceStatus.Connected) {
                 Button(
                     onClick = {
                         if (device.isCalibrating) {
