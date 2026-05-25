@@ -1,22 +1,13 @@
 package com.orotrain.oro.ui.screens
 
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.Lock
-import androidx.compose.material.icons.rounded.LockOpen
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
@@ -37,21 +28,14 @@ import com.orotrain.oro.model.DeviceStatus
 import com.orotrain.oro.model.OroUiState
 import com.orotrain.oro.ui.components.CalibrationDialog
 import com.orotrain.oro.ui.components.DeviceCard
-import com.orotrain.oro.ui.components.LedControlDialog
 import com.orotrain.oro.ui.theme.AccentCyan
-import org.burnoutcrew.reorderable.ReorderableItem
-import org.burnoutcrew.reorderable.rememberReorderableLazyListState
-import org.burnoutcrew.reorderable.reorderable
-import org.burnoutcrew.reorderable.detectReorderAfterLongPress
 
 @Composable
 fun ConnectionScreen(
     state: OroUiState,
     onScan: () -> Unit,
     onToggleDevice: (String) -> Unit,
-    onReorder: (Int, Int) -> Unit,
-    isSeatOrderLocked: Boolean,
-    onToggleSeatLock: () -> Unit,
+    onSeatChange: (String, Int) -> Unit,
     onConnectAll: () -> Unit = {},
     modifier: Modifier = Modifier,
     onStartCalibration: ((String) -> Unit)? = null,
@@ -59,24 +43,19 @@ fun ConnectionScreen(
     onSetThreshold: ((String, Float) -> Unit)? = null
 ) {
     val connectedDevices = remember(state.devices) {
-        state.devices.filter { it.status == DeviceStatus.Connected }
+        state.devices
+            .filter { it.status == DeviceStatus.Connected }
+            .sortedBy { it.seat ?: Int.MAX_VALUE }
     }
     val otherDevices = remember(state.devices) {
         state.devices.filter { it.status != DeviceStatus.Connected }
     }
 
-    val reorderableState = rememberReorderableLazyListState(onMove = { from, to ->
-        if (!isSeatOrderLocked) {
-            onReorder(from.index, to.index)
-        }
-    })
-
     val scrollState = rememberScrollState()
 
-    // Calibration dialog state
     var calibratingDeviceId by remember { mutableStateOf<String?>(null) }
-    val calibratingDevice = calibratingDeviceId?.let { deviceId ->
-        state.devices.find { it.id == deviceId }
+    val calibratingDevice = calibratingDeviceId?.let { id ->
+        state.devices.find { it.id == id }
     }
 
     Column(
@@ -116,14 +95,13 @@ fun ConnectionScreen(
             }
         }
 
-        // Connect All button (only show if there are disconnected devices)
-        val disconnectedDevicesCount = otherDevices.count { it.status == DeviceStatus.Disconnected }
-        if (disconnectedDevicesCount > 0) {
+        val disconnectedCount = otherDevices.count { it.status == DeviceStatus.Disconnected }
+        if (disconnectedCount > 0) {
             OutlinedButton(
                 onClick = onConnectAll,
                 modifier = Modifier.fillMaxWidth(0.6f)
             ) {
-                Text("Connect All ($disconnectedDevicesCount)")
+                Text("Connect All ($disconnectedCount)")
             }
         }
 
@@ -138,76 +116,39 @@ fun ConnectionScreen(
                 modifier = Modifier.fillMaxWidth(),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                Text(
-                    text = "Assign Seats",
-                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
-                    color = AccentCyan
-                )
                 if (connectedDevices.isNotEmpty()) {
-                    OutlinedButton(
-                        onClick = onToggleSeatLock,
-                        modifier = Modifier.align(Alignment.End)
-                    ) {
-                        Icon(
-                            imageVector = if (isSeatOrderLocked) Icons.Rounded.Lock else Icons.Rounded.LockOpen,
-                            contentDescription = null,
-                            modifier = Modifier.padding(end = 8.dp)
-                        )
-                        Text(text = if (isSeatOrderLocked) "Unlock Seat Order" else "Lock Seat Order")
-                    }
-                    if (isSeatOrderLocked) {
-                        Text(
-                            text = "Seat order locked. Unlock to rearrange device positions.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.7f),
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(top = 8.dp, bottom = 4.dp)
-                        )
-                    }
-                }
-                LazyColumn(
-                    state = reorderableState.listState,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .heightIn(max = 420.dp)
-                        .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.4f))
-                        .then(if (isSeatOrderLocked) Modifier else Modifier.reorderable(reorderableState)),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                    contentPadding = PaddingValues(vertical = 8.dp)
-                ) {
-                    itemsIndexed(
-                        items = connectedDevices,
-                        key = { _, item -> item.id }
-                    ) { index, device ->
-                        ReorderableItem(reorderableState, key = device.id) { isDragging ->
-                            val seatRole = when (index) {
-                                0 -> "Pacer"
-                                connectedDevices.lastIndex -> if (connectedDevices.size > 1) "Steerer" else null
+                    Text(
+                        text = "Assign Seats",
+                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                        color = AccentCyan
+                    )
+                    Text(
+                        text = "Tap a seat number to reassign. Seat 1 is always the Pacer.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.6f)
+                    )
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        connectedDevices.forEach { device ->
+                            val seatRole = when (device.seat) {
+                                1 -> "Pacer"
+                                connectedDevices.lastOrNull()?.seat -> if (connectedDevices.size > 1) "Steerer" else null
                                 else -> null
                             }
-                            val itemModifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 12.dp)
-                                .then(
-                                    if (isSeatOrderLocked) {
-                                        Modifier
-                                    } else {
-                                        Modifier.detectReorderAfterLongPress(reorderableState)
-                                    }
-                                )
                             DeviceCard(
                                 device = device,
                                 onToggle = onToggleDevice,
-                                seatNumber = index + 1,
+                                seatNumber = device.seat,
                                 seatRole = seatRole,
-                                isDragging = if (isSeatOrderLocked) false else isDragging,
+                                seatCount = connectedDevices.size,
+                                onSeatChange = { newSeat -> onSeatChange(device.id, newSeat) },
                                 onStartCalibration = { deviceId ->
                                     calibratingDeviceId = deviceId
                                     onStartCalibration?.invoke(deviceId)
                                 },
                                 onStopCalibration = onStopCalibration,
-                                modifier = itemModifier
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 4.dp)
                             )
                         }
                     }
@@ -219,9 +160,7 @@ fun ConnectionScreen(
                         style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
                         color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.8f)
                     )
-                    Column(
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         otherDevices.forEach { device ->
                             DeviceCard(
                                 device = device,
@@ -237,14 +176,11 @@ fun ConnectionScreen(
         }
     }
 
-    // Show calibration dialog when a device is being calibrated
     if (calibratingDevice != null) {
         CalibrationDialog(
             device = calibratingDevice,
             onDismiss = { calibratingDeviceId = null },
-            onStartCalibration = {
-                onStartCalibration?.invoke(calibratingDevice.id)
-            },
+            onStartCalibration = { onStartCalibration?.invoke(calibratingDevice.id) },
             onStopCalibration = {
                 onStopCalibration?.invoke(calibratingDevice.id)
                 calibratingDeviceId = null
@@ -252,8 +188,7 @@ fun ConnectionScreen(
             onSetThreshold = { threshold ->
                 onSetThreshold?.invoke(calibratingDevice.id, threshold)
             },
-            previewMode = false  // Enable preview mode to demo all states
+            previewMode = false
         )
     }
-
 }
