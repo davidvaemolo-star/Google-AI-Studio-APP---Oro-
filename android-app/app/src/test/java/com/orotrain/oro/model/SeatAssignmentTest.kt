@@ -47,6 +47,15 @@ class SeatAssignmentTest {
         assertEquals(2, result.find { it.id == "b" }?.seat)
     }
 
+    @Test
+    fun `swapSeats null-seat device takes occupied seat, incumbent keeps its seat`() {
+        // When the moving device has no prior seat, no eviction happens — the incumbent is not cleared.
+        val devices = listOf(device("a", seat = 1), device("b", seat = null))
+        val result = swapSeats(devices, deviceId = "b", newSeat = 1)
+        assertEquals(1, result.find { it.id == "b" }?.seat)
+        assertEquals(1, result.find { it.id == "a" }?.seat)
+    }
+
     // --- autoAssignSeats ---
 
     @Test
@@ -78,5 +87,11 @@ class SeatAssignmentTest {
         val devices = listOf(device("a", seat = 1), disconnected)
         val result = autoAssignSeats(devices)
         assertNull(result.find { it.id == "x" }?.seat)
+    }
+
+    @Test
+    fun `autoAssignSeats returns empty list when given empty list`() {
+        val result = autoAssignSeats(emptyList())
+        assertEquals(emptyList<HapticDevice>(), result)
     }
 }
