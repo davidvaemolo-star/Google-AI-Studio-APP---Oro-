@@ -49,8 +49,8 @@ fun DeviceCard(
     modifier: Modifier = Modifier,
     seatNumber: Int? = null,
     seatRole: String? = null,
-    seatCount: Int = 6,
     isDragging: Boolean = false,
+    seatCount: Int = 6,
     onSeatChange: ((Int) -> Unit)? = null,
     onStartCalibration: ((String) -> Unit)? = null,
     onStopCalibration: ((String) -> Unit)? = null
@@ -84,7 +84,10 @@ fun DeviceCard(
                 SeatBadge(
                     number = seatNumber,
                     role = seatRole,
-                    modifier = Modifier.clickable(enabled = onSeatChange != null) {
+                    modifier = Modifier.clickable(
+                        enabled = onSeatChange != null,
+                        onClickLabel = "Change seat"
+                    ) {
                         dropdownExpanded = true
                     }
                 )
