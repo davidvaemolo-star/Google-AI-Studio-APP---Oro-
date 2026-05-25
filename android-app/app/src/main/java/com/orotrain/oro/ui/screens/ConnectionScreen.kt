@@ -128,10 +128,12 @@ fun ConnectionScreen(
                         color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.6f)
                     )
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        val lastSeat = connectedDevices.lastOrNull()?.seat
                         connectedDevices.forEach { device ->
-                            val seatRole = when (device.seat) {
-                                1 -> "Pacer"
-                                connectedDevices.lastOrNull()?.seat -> if (connectedDevices.size > 1) "Steerer" else null
+                            val seatRole = when {
+                                device.seat == null -> null
+                                device.seat == 1 -> "Pacer"
+                                lastSeat != null && device.seat == lastSeat && connectedDevices.size > 1 -> "Steerer"
                                 else -> null
                             }
                             DeviceCard(
