@@ -11,6 +11,8 @@ import com.orotrain.oro.model.AppDestination
 import com.orotrain.oro.model.Programme
 import com.orotrain.oro.model.DeviceStatus
 import com.orotrain.oro.model.HapticDevice
+import com.orotrain.oro.model.autoAssignSeats
+import com.orotrain.oro.model.swapSeats
 import com.orotrain.oro.model.MAX_SETS
 import com.orotrain.oro.model.MAX_SPM
 import com.orotrain.oro.model.MAX_STROKES
@@ -823,64 +825,11 @@ class MainViewModel(
         }
     }
 
-    fun reorderConnectedDevices(fromIndex: Int, toIndex: Int) {
-        if (_uiState.value.isSeatOrderLocked) return
-        if (fromIndex == toIndex) return
-        _uiState.update { state ->
-            val connected = state.devices.filter { it.status == DeviceStatus.Connected }
-            if (fromIndex !in connected.indices || toIndex !in connected.indices) return@update state
-            val reordered = connected.toMutableList().apply {
-                val moved = removeAt(fromIndex)
-                add(toIndex, moved)
-            }
-            val reassigned = reordered.mapIndexed { index, device ->
-                device.copy(seat = index + 1)
-            }
-
-            reassigned.firstOrNull()?.let { newPacer ->
-                setPacerDevice(newPacer.id)
-            }
-
-            val connectedIds = reassigned.map { it.id }.toSet()
-            val others = state.devices.filter { it.id !in connectedIds }.map {
-                if (it.status == DeviceStatus.Connected) it.copy(seat = null) else it
-            }
-            state.copy(devices = reassigned + others)
-        }
-    }
-
     private fun renumberSeats(devices: List<HapticDevice>): List<HapticDevice> {
-        val connected = devices
-            .filter { it.status == DeviceStatus.Connected }
-            .sortedBy { device ->
-                // Extract numeric suffix from device name (e.g., "Oro-01" -> 1, "Oro-02" -> 2)
-                // This ensures consistent seat assignment based on device name, not connection order
-                val namePattern = """Oro-(\d+)""".toRegex()
-                val match = namePattern.find(device.name)
-                if (match != null) {
-                    match.groupValues[1].toIntOrNull() ?: Int.MAX_VALUE
-                } else {
-                    // If no number found, sort by name alphabetically
-                    device.name.hashCode()
-                }
-            }
-
-        val reassigned = connected.mapIndexed { index, device ->
-            device.copy(seat = index + 1)
-        }
-
-        // Set first device (Seat 1) as pacer - now based on device name, not connection order
-        if (reassigned.isNotEmpty()) {
-            val pacerDevice = reassigned[0]
-            Log.d(TAG, "Setting pacer device: ${pacerDevice.name} (${pacerDevice.id}) as Seat 1")
-            setPacerDevice(pacerDevice.id)
-        }
-
-        val connectedIds = reassigned.map { it.id }.toSet()
-        val others = devices.filter { it.id !in connectedIds }.map {
-            if (it.status == DeviceStatus.Connected) it.copy(seat = null) else it
-        }
-        return reassigned + others
+        val result = autoAssignSeats(devices)
+        result.find { it.seat == 1 && it.status == DeviceStatus.Connected }
+            ?.let { setPacerDevice(it.id) }
+        return result
     }
 
     // Haptic training functions
@@ -981,18 +930,21 @@ class MainViewModel(
         bleManager?.setPacerDevice(deviceId)
     }
 
+    fun assignSeat(deviceId: String, newSeat: Int) {
+        _uiState.update { state ->
+            val updated = swapSeats(state.devices, deviceId, newSeat)
+            val pacer = updated.find { it.seat == 1 && it.status == DeviceStatus.Connected }
+            pacer?.let { setPacerDevice(it.id) }
+            state.copy(devices = updated)
+        }
+    }
+
     fun enableStrokeDetection(deviceId: String) {
         bleManager?.enableStrokeDetection(deviceId)
     }
 
     fun disableStrokeDetection(deviceId: String) {
         bleManager?.disableStrokeDetection(deviceId)
-    }
-
-    fun toggleSeatOrderLock() {
-        _uiState.update { state ->
-            state.copy(isSeatOrderLocked = !state.isSeatOrderLocked)
-        }
     }
 
     // Training Session Controller
@@ -1084,7 +1036,8 @@ class MainViewModel(
                 strokes = currentZone.strokes,
                 sets = currentZone.sets,
                 spm = currentZone.spm,
-                zoneColor = currentZone.zoneColor
+                zoneColor = currentZone.zoneColor,
+                isPacer = device.seat == 1
             )
         }
     }
