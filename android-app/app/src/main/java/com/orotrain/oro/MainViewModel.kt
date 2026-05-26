@@ -62,10 +62,14 @@ class MainViewModel(
                     _uiState.update { state ->
                         val mergedDevices = devices.map { device ->
                             val existing = state.devices.find { it.id == device.id }
+                            // Note: isCalibrating is intentionally NOT preserved — on every reconnect
+                            // we trust the BLE-layer default (false). The firmware-side calibration
+                            // state is reset on every cold boot anyway (RAM clears on System OFF),
+                            // and preserving stale true values across reconnects strands the dialog
+                            // in the ACTIVE view with no Start button.
                             device.copy(
                                 seat = existing?.seat,
                                 batteryLevel = device.batteryLevel ?: existing?.batteryLevel,
-                                isCalibrating = existing?.isCalibrating ?: device.isCalibrating,
                                 strokeThreshold = existing?.strokeThreshold ?: device.strokeThreshold,
                                 strokeCount = existing?.strokeCount ?: device.strokeCount,
                                 lastStrokePhase = existing?.lastStrokePhase ?: device.lastStrokePhase,
@@ -234,7 +238,10 @@ class MainViewModel(
                         calibrationMaxAccel = update.maxAccel,
                         calibrationMinAccel = update.minAccel,
                         strokeThreshold = update.suggestedThreshold,
-                        isCalibrationComplete = update.isComplete
+                        isCalibrationComplete = update.isComplete,
+                        // Clear isCalibrating on completion so the dialog can reach the COMPLETE view —
+                        // the when-cascade in CalibrationDialog tests isCalibrating before isCalibrationComplete.
+                        isCalibrating = if (update.isComplete) false else device.isCalibrating
                     )
                 } else {
                     device

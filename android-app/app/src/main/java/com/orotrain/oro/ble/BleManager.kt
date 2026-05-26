@@ -419,6 +419,90 @@ class BleManager(private val context: Context) {
         Log.d(TAG, "Disconnected from device: $deviceId")
     }
 
+    // GATT operations must be serialized: Android's BluetoothGatt only supports one in-flight
+    // operation at a time across ALL characteristics and descriptors. Firing writes back-to-back
+    // (e.g., 5 CCCD subscribes in onServicesDiscovered, or configureZone+startTraining at session
+    // start) causes all but the first to be silently dropped. Symptom: notifications never arrive,
+    // or commands like CMD_START_TRAINING never reach firmware.
+    //
+    // Single unified queue per device, drained by either onDescriptorWrite or onCharacteristicWrite.
+    private sealed class PendingGattOp {
+        abstract val label: String
+        data class DescriptorWrite(
+            val descriptor: BluetoothGattDescriptor,
+            val value: ByteArray,
+            override val label: String
+        ) : PendingGattOp()
+        data class CharacteristicWrite(
+            val characteristic: BluetoothGattCharacteristic,
+            val value: ByteArray,
+            val writeType: Int,
+            override val label: String
+        ) : PendingGattOp()
+    }
+    private val gattOpQueues = mutableMapOf<String, ArrayDeque<PendingGattOp>>()
+    private val gattOpInFlight = mutableMapOf<String, Boolean>()
+
+    private fun enqueueDescriptorWrite(
+        gatt: BluetoothGatt,
+        descriptor: BluetoothGattDescriptor?,
+        value: ByteArray,
+        label: String
+    ) {
+        if (descriptor == null) {
+            Log.w(TAG, "  ✗ Cannot enqueue CCCD write [$label]: descriptor is null")
+            return
+        }
+        enqueueGattOp(gatt, PendingGattOp.DescriptorWrite(descriptor, value, label))
+    }
+
+    private fun enqueueCharacteristicWrite(
+        gatt: BluetoothGatt,
+        characteristic: BluetoothGattCharacteristic,
+        value: ByteArray,
+        writeType: Int,
+        label: String
+    ): Boolean {
+        enqueueGattOp(gatt, PendingGattOp.CharacteristicWrite(characteristic, value, writeType, label))
+        return true
+    }
+
+    private fun enqueueGattOp(gatt: BluetoothGatt, op: PendingGattOp) {
+        val deviceId = gatt.device.address
+        synchronized(gattOpQueues) {
+            val queue = gattOpQueues.getOrPut(deviceId) { ArrayDeque() }
+            queue.addLast(op)
+            if (gattOpInFlight[deviceId] != true) {
+                drainGattOpQueue(gatt)
+            }
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun drainGattOpQueue(gatt: BluetoothGatt) {
+        val deviceId = gatt.device.address
+        synchronized(gattOpQueues) {
+            val queue = gattOpQueues[deviceId] ?: return
+            val next = queue.removeFirstOrNull()
+            if (next == null) {
+                gattOpInFlight[deviceId] = false
+                return
+            }
+            gattOpInFlight[deviceId] = true
+            val ok = when (next) {
+                is PendingGattOp.DescriptorWrite ->
+                    writeDescriptorCompat(gatt, next.descriptor, next.value)
+                is PendingGattOp.CharacteristicWrite ->
+                    writeCharacteristicCompat(gatt, next.characteristic, next.value, next.writeType)
+            }
+            if (!ok) {
+                Log.w(TAG, "  ✗ GATT op [${next.label}] failed to queue for $deviceId")
+                gattOpInFlight[deviceId] = false
+                drainGattOpQueue(gatt)
+            }
+        }
+    }
+
     private val gattCallback = object : BluetoothGattCallback() {
         @SuppressLint("MissingPermission")
         override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
@@ -469,6 +553,12 @@ class BleManager(private val context: Context) {
 
                     deviceGattMap.remove(deviceId)
                     deviceStatusMap.remove(deviceId)
+
+                    // Clear any pending GATT ops so a fresh reconnect starts clean
+                    synchronized(gattOpQueues) {
+                        gattOpQueues.remove(deviceId)
+                        gattOpInFlight.remove(deviceId)
+                    }
 
                     try {
                         gatt.close()
@@ -548,7 +638,7 @@ class BleManager(private val context: Context) {
                 if (deviceStatusChar != null) {
                     gatt.setCharacteristicNotification(deviceStatusChar, true)
                     val descriptor = deviceStatusChar.getDescriptor(CLIENT_CHARACTERISTIC_CONFIG_UUID)
-                    writeDescriptorCompat(gatt, descriptor, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)
+                    enqueueDescriptorWrite(gatt, descriptor, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE, "device-status")
                     Log.d(TAG, "  ✓ Device Status characteristic enabled for $deviceId")
                 } else {
                     Log.w(TAG, "  ✗ Device Status characteristic NOT FOUND for $deviceId")
@@ -568,7 +658,7 @@ class BleManager(private val context: Context) {
                     if (strokeEventChar != null) {
                         gatt.setCharacteristicNotification(strokeEventChar, true)
                         val descriptor = strokeEventChar.getDescriptor(CLIENT_CHARACTERISTIC_CONFIG_UUID)
-                        writeDescriptorCompat(gatt, descriptor, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)
+                        enqueueDescriptorWrite(gatt, descriptor, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE, "stroke-event")
                         Log.d(TAG, "  ✓ Enabled stroke event notifications for pacer: ${gatt.device.address}")
                     } else {
                         Log.w(TAG, "  ✗ Stroke Event characteristic NOT FOUND for pacer: ${gatt.device.address}")
@@ -580,7 +670,7 @@ class BleManager(private val context: Context) {
                 if (calibrationChar != null) {
                     gatt.setCharacteristicNotification(calibrationChar, true)
                     val descriptor = calibrationChar.getDescriptor(CLIENT_CHARACTERISTIC_CONFIG_UUID)
-                    writeDescriptorCompat(gatt, descriptor, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)
+                    enqueueDescriptorWrite(gatt, descriptor, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE, "calibration")
                     Log.d(TAG, "  ✓ Calibration notifications enabled for $deviceId")
                 } else {
                     Log.w(TAG, "  ✗ Calibration characteristic NOT FOUND for $deviceId")
@@ -591,7 +681,7 @@ class BleManager(private val context: Context) {
                 if (fsrDataChar != null) {
                     gatt.setCharacteristicNotification(fsrDataChar, true)
                     val descriptor = fsrDataChar.getDescriptor(CLIENT_CHARACTERISTIC_CONFIG_UUID)
-                    writeDescriptorCompat(gatt, descriptor, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)
+                    enqueueDescriptorWrite(gatt, descriptor, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE, "fsr-data")
                     Log.d(TAG, "  ✓ FSR data notifications enabled for $deviceId")
                 } else {
                     Log.w(TAG, "  ✗ FSR Data characteristic NOT FOUND for $deviceId")
@@ -605,7 +695,7 @@ class BleManager(private val context: Context) {
                     // Enable battery notifications
                     gatt.setCharacteristicNotification(batteryChar, true)
                     val descriptor = batteryChar.getDescriptor(CLIENT_CHARACTERISTIC_CONFIG_UUID)
-                    writeDescriptorCompat(gatt, descriptor, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)
+                    enqueueDescriptorWrite(gatt, descriptor, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE, "battery-level")
                 } else {
                     // Fallback: Set default battery level if Battery Service not available
                     // This allows testing when devices don't have the standard battery service
@@ -655,6 +745,36 @@ class BleManager(private val context: Context) {
             value: ByteArray
         ) {
             handleCharacteristicChanged(gatt, characteristic, value)
+        }
+
+        override fun onDescriptorWrite(
+            gatt: BluetoothGatt,
+            descriptor: BluetoothGattDescriptor,
+            status: Int
+        ) {
+            val deviceId = gatt.device.address
+            if (status != BluetoothGatt.GATT_SUCCESS) {
+                Log.w(TAG, "  ✗ CCCD write failed for $deviceId (status=$status, uuid=${descriptor.characteristic.uuid})")
+            }
+            synchronized(gattOpQueues) {
+                gattOpInFlight[deviceId] = false
+            }
+            drainGattOpQueue(gatt)
+        }
+
+        override fun onCharacteristicWrite(
+            gatt: BluetoothGatt,
+            characteristic: BluetoothGattCharacteristic,
+            status: Int
+        ) {
+            val deviceId = gatt.device.address
+            if (status != BluetoothGatt.GATT_SUCCESS) {
+                Log.w(TAG, "  ✗ Characteristic write failed for $deviceId (status=$status, uuid=${characteristic.uuid})")
+            }
+            synchronized(gattOpQueues) {
+                gattOpInFlight[deviceId] = false
+            }
+            drainGattOpQueue(gatt)
         }
     }
 
@@ -951,11 +1071,12 @@ class BleManager(private val context: Context) {
             put(if (isPacer) 0x01.toByte() else 0x00.toByte())
         }.array()
 
-        val result = writeCharacteristicCompat(
+        val result = enqueueCharacteristicWrite(
             gatt,
             zoneSettingsChar,
             data,
-            BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
+            BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT,
+            "zone-settings"
         )
         Log.d(TAG, "Configure zone for $deviceId: strokes=$strokes, sets=$sets, spm=$spm, result=$result")
         return result
@@ -1059,11 +1180,12 @@ class BleManager(private val context: Context) {
                 pattern
             )
 
-            val result = writeCharacteristicCompat(
+            val result = enqueueCharacteristicWrite(
                 gatt,
                 hapticControlChar,
                 data,
-                hapticControlChar.writeType
+                hapticControlChar.writeType,
+                "haptic-cmd-0x${"%02X".format(command)}"
             )
             if (!result) {
                 Log.w(TAG, "Haptic command write failed for $deviceId (cmd=$command)")
@@ -1101,7 +1223,7 @@ class BleManager(private val context: Context) {
 
         gatt.setCharacteristicNotification(strokeEventChar, true)
         val descriptor = strokeEventChar.getDescriptor(CLIENT_CHARACTERISTIC_CONFIG_UUID)
-        writeDescriptorCompat(gatt, descriptor, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)
+        enqueueDescriptorWrite(gatt, descriptor, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE, "stroke-event-late")
 
         Log.d(TAG, "Enabled stroke event notifications for: ${gatt.device.address}")
     }
@@ -1237,7 +1359,7 @@ class BleManager(private val context: Context) {
         val clampedVolume = volume.coerceIn(0, 100)
 
         val data = byteArrayOf(audioEvent, clampedVolume.toByte())
-        val result = writeCharacteristicCompat(gatt, audioChar, data, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT)
+        val result = enqueueCharacteristicWrite(gatt, audioChar, data, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT, "audio-event-0x${"%02X".format(audioEvent)}")
 
         if (result) {
             Log.d(TAG, "Audio command sent successfully to $deviceId: event=0x${String.format("%02X", audioEvent)}, volume=$clampedVolume")
@@ -1259,11 +1381,12 @@ class BleManager(private val context: Context) {
         val calibrationChar = hapticService.getCharacteristic(CALIBRATION_UUID) ?: return false
 
         val data = byteArrayOf(CAL_CMD_START)
-        val result = writeCharacteristicCompat(
+        val result = enqueueCharacteristicWrite(
             gatt,
             calibrationChar,
             data,
-            BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
+            BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT,
+            "cal-start"
         )
         Log.d(TAG, "Start calibration for $deviceId: $result")
         return result
@@ -1278,11 +1401,12 @@ class BleManager(private val context: Context) {
         val calibrationChar = hapticService.getCharacteristic(CALIBRATION_UUID) ?: return false
 
         val data = byteArrayOf(CAL_CMD_STOP)
-        val result = writeCharacteristicCompat(
+        val result = enqueueCharacteristicWrite(
             gatt,
             calibrationChar,
             data,
-            BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
+            BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT,
+            "cal-stop"
         )
         Log.d(TAG, "Stop calibration for $deviceId: $result")
         return result
@@ -1304,11 +1428,12 @@ class BleManager(private val context: Context) {
             ((thresholdInt.toInt() shr 8) and 0xFF).toByte()
         )
 
-        val result = writeCharacteristicCompat(
+        val result = enqueueCharacteristicWrite(
             gatt,
             calibrationChar,
             data,
-            BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
+            BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT,
+            "cal-set-threshold"
         )
         Log.d(TAG, "Set stroke threshold for $deviceId to $threshold: $result")
         return result
