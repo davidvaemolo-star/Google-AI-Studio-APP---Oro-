@@ -331,21 +331,9 @@ Note: The field name in firmware is `forcePercent` / `thresholdTriggered`. The c
 
 ---
 
-##### 1.9 LED Control (Write Only)
-**UUID:** `12340009-1234-5678-1234-56789abcdef0`
-**Properties:** `BLEWrite`
-**Size:** 5 bytes
+##### 1.9 LED Control — REMOVED
 
-Controls the device RGB LED. Hardware not yet connected in current firmware (characteristic is defined; LED drive logic is pending).
-
-**Data Format:**
-```
-Byte 0: Command (uint8)
-Byte 1: Red (uint8, 0–255)
-Byte 2: Green (uint8, 0–255)
-Byte 3: Blue (uint8, 0–255)
-Byte 4: Parameter (uint8, command-specific)
-```
+The LED is driven entirely by firmware from `DeviceState` (see ADR-0009). No BLE characteristic exists at `…0009`; the slot is reserved and must not be reused.
 
 ---
 
@@ -396,7 +384,7 @@ object BleConstants {
     val CALIBRATION_UUID           = UUID.fromString("12340006-1234-5678-1234-56789abcdef0")
     val AUDIO_CONTROL_UUID         = UUID.fromString("12340007-1234-5678-1234-56789abcdef0")
     val FSR_DATA_UUID              = UUID.fromString("12340008-1234-5678-1234-56789abcdef0")
-    val LED_CONTROL_UUID           = UUID.fromString("12340009-1234-5678-1234-56789abcdef0")
+    // Note: 12340009 is reserved (LED control was removed — LED is firmware-driven; see ADR-0009)
 
     // Battery Service
     val BATTERY_SERVICE_UUID       = UUID.fromString("0000180F-0000-1000-8000-00805F9B34FB")
@@ -441,7 +429,6 @@ private val gattCallback = object : BluetoothGattCallback() {
         calibrationChar    = hapticService.getCharacteristic(BleConstants.CALIBRATION_UUID)
         audioControlChar   = hapticService.getCharacteristic(BleConstants.AUDIO_CONTROL_UUID)
         fsrDataChar        = hapticService.getCharacteristic(BleConstants.FSR_DATA_UUID)
-        ledControlChar     = hapticService.getCharacteristic(BleConstants.LED_CONTROL_UUID)
 
         // Enable notifications
         enableNotifications(gatt, deviceStatusChar)
@@ -680,8 +667,7 @@ Oro Haptic Service:        12340000-1234-5678-1234-56789abcdef0
 ├─ Stroke Event:           12340005-1234-5678-1234-56789abcdef0
 ├─ Calibration:            12340006-1234-5678-1234-56789abcdef0
 ├─ Audio Control:          12340007-1234-5678-1234-56789abcdef0
-├─ FSR Data:               12340008-1234-5678-1234-56789abcdef0
-└─ LED Control:            12340009-1234-5678-1234-56789abcdef0
+└─ FSR Data:               12340008-1234-5678-1234-56789abcdef0
 
 Battery Service:           0000180F-0000-1000-8000-00805F9B34FB
 └─ Battery Level:          00002A19-0000-1000-8000-00805F9B34FB

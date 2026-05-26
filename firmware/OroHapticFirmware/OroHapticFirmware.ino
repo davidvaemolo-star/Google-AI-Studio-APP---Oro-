@@ -45,10 +45,22 @@
 #define BATTERY_READ_INTERVAL 30000  // Read every 30 seconds
 
 // RGB LED Pins (external common-cathode LED — Active HIGH)
-// D9=P1.14, D8=P1.13, D7=P1.12 — nRF52840 port 1 pins use offset 32
-#define LED_R_PIN 46  // D9 = P1.14 (32+14)
-#define LED_G_PIN 45  // D8 = P1.13 (32+13)
-#define LED_B_PIN 44  // D7 = P1.12 (32+12)
+// Use Arduino pin numbers (not raw nRF GPIO) — HwPWM.addPin() and other library
+// abstractions validate against the variant's pin map (PINS_COUNT) and reject
+// raw GPIO numbers like 44/45/46 with ERROR_INVALID_PARAM.
+// XIAO nRF52840 Sense variant: D7→P1.12, D8→P1.13, D9→P1.14.
+#define LED_R_PIN 9   // D9 → P1.14
+#define LED_G_PIN 8   // D8 → P1.13
+#define LED_B_PIN 7   // D7 → P1.12
+
+// Power Button (Tact Switch) — D10 = P1.15. See ADR-0011.
+// 2-second hold → System OFF; single-press wake reboots the firmware.
+// Use Arduino pin 10 (not raw GPIO 47); the variant maps Arduino-10 → P1.15.
+// Raw GPIO numbers don't reliably support INPUT_PULLUP via the Arduino abstraction.
+#define BUTTON_PIN 10               // D10 (Arduino) → P1.15 on XIAO Sense
+#define BUTTON_PIN_RAW 47           // For nrf_gpio_cfg_sense_input in powerOff()
+#define POWER_HOLD_MS 2000          // Hold duration for power-off
+#define BUTTON_DEBOUNCE_MS 50
 
 // FSR (Force Sensitive Resistor) Configuration
 #define FSR_PIN A3                    // Analog pin for FSR
@@ -290,6 +302,17 @@ struct FsrState {
 
 FsrState fsrState = {0.0f, 0, 0, false, 0, 100, 900};  // Reasonable defaults for typical FSR
 
+// Power button state — see ADR-0011
+struct ButtonState {
+  bool holding;                  // True between press-down and release/fire
+  bool startupGated;             // True until we observe a HIGH (released) reading.
+                                 // Prevents stuck-low pins from auto-powering-off at boot.
+  unsigned long pressStartMs;    // millis() at falling edge
+  int lastRawRead;               // For debounce
+  unsigned long lastEdgeMs;      // Last debounced state change
+};
+ButtonState buttonState = {false, true, 0, HIGH, 0};
+
 // Battery monitoring
 const float BATTERY_DIVIDER_RATIO = (1000000.0f + 510000.0f) / 510000.0f;  // 2.960784
 const float BATTERY_FULL_VOLTAGE = 4.2f;
@@ -315,10 +338,25 @@ void setup() {
   Serial.println("Hardware: XIAO nRF52840 Sense + DRV2605L");
   Serial.println();
 
-  // Initialize RGB LED (common-cathode: LOW = off)
-  pinMode(LED_R_PIN, OUTPUT); digitalWrite(LED_R_PIN, LOW);
-  pinMode(LED_G_PIN, OUTPUT); digitalWrite(LED_G_PIN, LOW);
-  pinMode(LED_B_PIN, OUTPUT); digitalWrite(LED_B_PIN, LOW);
+  // Disable onboard XIAO LEDs (active-LOW: HIGH = off). External RGB is the only indicator.
+  pinMode(LED_RED, OUTPUT);   digitalWrite(LED_RED, HIGH);
+  pinMode(LED_GREEN, OUTPUT); digitalWrite(LED_GREEN, HIGH);
+  pinMode(LED_BLUE, OUTPUT);  digitalWrite(LED_BLUE, HIGH);
+
+  // External RGB LED: explicit hardware PWM allocation on HwPWM0 (was HwPWM2 — switched to PWM0
+  // in case the higher modules are claimed implicitly by Bluefruit/audio stacks).
+  // Bare analogWrite on P1.12/13/14 was failing to produce true PWM.
+  // Order matters: config must be set BEFORE begin() — the peripheral latches its
+  // configuration when begin() arms the PWM sequence.
+  HwPWM0.addPin(LED_R_PIN);
+  HwPWM0.addPin(LED_G_PIN);
+  HwPWM0.addPin(LED_B_PIN);
+  HwPWM0.setMaxValue(255);                              // 0–255 brightness range
+  HwPWM0.setClockDiv(PWM_PRESCALER_PRESCALER_DIV_16);   // 1 MHz → ~3.9 kHz at 8-bit
+  HwPWM0.begin();
+  HwPWM0.writePin(LED_R_PIN, 0);
+  HwPWM0.writePin(LED_G_PIN, 0);
+  HwPWM0.writePin(LED_B_PIN, 0);
 
   // Initialize I2C with custom pins
   Wire.begin();
@@ -363,6 +401,14 @@ void setup() {
   pinMode(FSR_PIN, INPUT);
   Serial.println("FSR initialized on pin A3");
 
+  // Power button — D10 input-pullup (idle HIGH, pressed LOW). See ADR-0011.
+  pinMode(BUTTON_PIN, INPUT_PULLUP);
+  delay(10);  // Let pullup settle before the startup gate samples
+
+  // Wake/boot greeting: every cold start (whether from USB plug-in or System OFF wake)
+  // plays "Oro" so the button press is acknowledged audibly before BLE comes up.
+  playAudioEvent(AUDIO_POWER_ON, 100);
+
   // Initialize battery monitoring
   pinMode(BATTERY_PIN, INPUT);
 #if defined(AR_INTERNAL_0_6)
@@ -384,6 +430,7 @@ void setup() {
   Serial.print("Current threshold: ");
   Serial.print(strokeDetection.threshold, 2);
   Serial.println("g");
+
 
   // Play startup haptic
   playHapticEffect(PATTERN_DOUBLE_CLICK, 100);
@@ -508,7 +555,12 @@ bool initializeBLE() {
   // Calibration Characteristic (Write + Notify)
   calibrationChar.setProperties(CHR_PROPS_WRITE | CHR_PROPS_NOTIFY);
   calibrationChar.setPermission(SECMODE_OPEN, SECMODE_OPEN);
-  calibrationChar.setFixedLen(4);  // 1 byte command + 2 bytes threshold + 1 byte status
+  // Writes: 1 byte (CMD_START/STOP) or 3 bytes (CMD_SET_THRESHOLD + int16) — the WRITE side
+  // accepts shorter incoming payloads; the callback's `len` parameter carries the real size.
+  // Notifies: ALL must be exactly 8 bytes (padded if shorter). setMaxLen with CHR_PROPS_NOTIFY
+  // in this Bluefruit version silently drops notifications — setFixedLen with consistent
+  // notify sizes is the reliable path.
+  calibrationChar.setFixedLen(8);
   calibrationChar.setWriteCallback(onCalibrationWrite);
   calibrationChar.begin();
 
@@ -907,6 +959,9 @@ void loop() {
       Serial.println("═══════════════════════════════════════════════════════════");
     }
   }
+
+  // Power button: check every loop iteration. See ADR-0011.
+  handlePowerButton();
 
   // Update battery level periodically
   if (millis() - lastBatteryRead >= BATTERY_READ_INTERVAL) {
@@ -1507,9 +1562,112 @@ void updateLedState() {
     b = (uint8_t)(b * brightness);
   }
 
-  analogWrite(LED_R_PIN, r);
-  analogWrite(LED_G_PIN, g);
-  analogWrite(LED_B_PIN, b);
+  // Power-button hold: linearly fade brightness to 0 over POWER_HOLD_MS. ADR-0011.
+  if (buttonState.holding) {
+    unsigned long held = millis() - buttonState.pressStartMs;
+    float scale = 1.0f - (float)held / (float)POWER_HOLD_MS;
+    if (scale < 0.0f) scale = 0.0f;
+    r = (uint8_t)(r * scale);
+    g = (uint8_t)(g * scale);
+    b = (uint8_t)(b * scale);
+  }
+
+  HwPWM0.writePin(LED_R_PIN, r);
+  HwPWM0.writePin(LED_G_PIN, g);
+  HwPWM0.writePin(LED_B_PIN, b);
+}
+
+// ============================================================================
+// POWER BUTTON — see ADR-0011
+// ============================================================================
+
+void handlePowerButton() {
+  int raw = digitalRead(BUTTON_PIN);
+  unsigned long now = millis();
+
+  // Startup gate: ignore button entirely until we observe at least one HIGH (released) reading.
+  // This prevents stuck-low pin states (wrong pin map, missing switch, wiring fault)
+  // from immediately triggering powerOff at boot.
+  if (buttonState.startupGated) {
+    if (raw == HIGH) {
+      buttonState.startupGated = false;
+      buttonState.lastRawRead = HIGH;
+      Serial.println("Power button startup gate cleared (pin observed HIGH)");
+    }
+    return;
+  }
+
+  // Debounce: only act on a stable change
+  if (raw != buttonState.lastRawRead) {
+    buttonState.lastEdgeMs = now;
+    buttonState.lastRawRead = raw;
+  }
+  if (now - buttonState.lastEdgeMs < BUTTON_DEBOUNCE_MS) {
+    // Still settling — but if already holding, keep checking the timer below
+  }
+
+  // Pressed (active LOW)
+  if (raw == LOW) {
+    if (!buttonState.holding && now - buttonState.lastEdgeMs >= BUTTON_DEBOUNCE_MS) {
+      buttonState.holding = true;
+      buttonState.pressStartMs = now;
+    }
+    if (buttonState.holding && (now - buttonState.pressStartMs) >= POWER_HOLD_MS) {
+      Serial.println("Power button hold reached threshold — calling powerOff()");
+      powerOff();
+      // If we return here, System OFF failed (likely USB-powered or debugger attached).
+      // Log it and leave holding=true so the LED stays dark until release.
+      Serial.println("WARN: powerOff() returned — SoftDevice refused SYSTEM_OFF (USB power?)");
+    }
+  } else {
+    // Released — cancel hold if we hadn't fired
+    if (buttonState.holding) {
+      buttonState.holding = false;
+    }
+  }
+}
+
+void powerOff() {
+  Serial.println("=== Powering OFF (System OFF) ===");
+
+  // Visually confirm shutdown — extinguish LED before sleeping
+  HwPWM0.writePin(LED_R_PIN, 0);
+  HwPWM0.writePin(LED_G_PIN, 0);
+  HwPWM0.writePin(LED_B_PIN, 0);
+
+  // Mute the audio amplifier (D6 LOW = shutdown on MAX98357A)
+  digitalWrite(I2S_SD_PIN, LOW);
+
+  // Stop BLE advertising so the phone sees a clean disconnect
+  Bluefruit.Advertising.stop();
+  if (Bluefruit.connected()) {
+    Bluefruit.disconnect(Bluefruit.connHandle());
+    delay(50);
+  }
+
+  // Wait for the button to be released before arming the wake source.
+  // Otherwise sd_power_system_off() latches and immediately sees the still-LOW pin,
+  // waking the chip back up instantly.
+  Serial.println("Waiting for button release before sleep...");
+  while (digitalRead(BUTTON_PIN) == LOW) {
+    delay(10);
+  }
+  delay(BUTTON_DEBOUNCE_MS);  // Debounce the release
+
+  // Configure D10 / P1.15 as a GPIO sense wake source (active LOW, pullup).
+  // On the next press the chip wakes via reset and setup() runs from the top.
+  // nrf_gpio_cfg_sense_input takes the raw nRF GPIO number, not the Arduino pin.
+  nrf_gpio_cfg_sense_input(BUTTON_PIN_RAW, NRF_GPIO_PIN_PULLUP, NRF_GPIO_PIN_SENSE_LOW);
+
+  // Enter System OFF. This call should not return.
+  sd_power_system_off();
+
+  // Fallback: if the SoftDevice refused (debugger attached, USB VBUS detected),
+  // poke the bare register and halt. On USB power this still won't physically
+  // power-down — the chip will simply spin in WFE — but at least we don't
+  // silently return to the main loop.
+  NRF_POWER->SYSTEMOFF = 1;
+  while (true) { __WFE(); __SEV(); __WFE(); }
 }
 
 // ============================================================================
@@ -1771,9 +1929,9 @@ void onCalibrationWrite(uint16_t conn_hdl, BLECharacteristic* chr, uint8_t* data
         Serial.print(strokeDetection.threshold, 2);
         Serial.println("g");
 
-        // Acknowledge
-        uint8_t response[4] = {CAL_CMD_SET_THRESHOLD, data[1], data[2], 0x01};
-        calibrationChar.notify(response, 4);
+        // Acknowledge — padded to 8 bytes to match setFixedLen(8). Trailing bytes are reserved.
+        uint8_t response[8] = {CAL_CMD_SET_THRESHOLD, data[1], data[2], 0x01, 0, 0, 0, 0};
+        calibrationChar.notify(response, 8);
       }
       break;
 
@@ -1883,7 +2041,10 @@ void sendCalibrationStatus() {
   Serial.print(calibrationState.minAccelSeen, 2);
   Serial.println("g");
 
-  calibrationChar.notify(data, 8);
+  bool notifyOk = calibrationChar.notify(data, 8);
+  if (!notifyOk) {
+    Serial.println("WARN: calibrationChar.notify() returned false — subscription not active?");
+  }
 }
 
 // ============================================================================

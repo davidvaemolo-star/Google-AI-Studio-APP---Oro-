@@ -56,10 +56,10 @@ The nRF52840 I2S peripheral uses dedicated castellated pads on the back of the X
 
 | Signal | Arduino Label | nRF52840 GPIO | Direction | Notes |
 |--------|--------------|---------------|-----------|-------|
-| Power Switch | D10 | P1.15 | Input (PULLUP) | Tactile switch; 50 ms debounce |
-| LED Red | D9 | P1.14 | Output | Common-anode RGB — Active LOW |
-| LED Green | D8 | P1.13 | Output | Common-anode RGB — Active LOW |
-| LED Blue | D7 | P1.12 | Output | Common-anode RGB — Active LOW |
+| Power Switch | D10 | P1.15 | Input (PULLUP) | Tactile switch; 2 s hold → System OFF (`sd_power_system_off`). Same pin configured as GPIO sense wake source — press wakes via chip reset. 50 ms debounce on press detection. See ADR-0011. |
+| LED Red | D9 | P1.14 | Output | Common-cathode RGB — Active HIGH |
+| LED Green | D8 | P1.13 | Output | Common-cathode RGB — Active HIGH |
+| LED Blue | D7 | P1.12 | Output | Common-cathode RGB — Active HIGH |
 
 ---
 
@@ -89,7 +89,8 @@ The nRF52840 I2S peripheral uses dedicated castellated pads on the back of the X
 | Calibration | `…0006` | Write / Notify | `[cmd][threshold_float16×2][status]` | Calibration control |
 | Audio Control | `…0007` | Write | `[audio_event][volume]` | Trigger audio prompts |
 | FSR Data | `…0008` | Read / Notify | `[force_pct][raw_adc_lsb][raw_adc_msb][threshold_flag]` | Force sensor data |
-| LED Control | `…0009` | Write | `[cmd][r][g][b][param]` | RGB LED control |
+
+> Note: The LED is firmware-driven from `DeviceState` — there is no BLE characteristic for LED control. See ADR-0009.
 
 ### Battery Service `0x180F` (Standard)
 
