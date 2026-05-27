@@ -385,6 +385,7 @@ bool AudioI2S::playStreamCallback(
             currentBuffer[2 * i + 1] = word;
         }
 
+        // outWords is already doubled (2 I2S words per source sample); pass as the I2S word count.
         startTransfer(outWords, firstChunk);
         firstChunk = false;
         playedAnything = true;
