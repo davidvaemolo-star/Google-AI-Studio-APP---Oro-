@@ -53,61 +53,101 @@ static const SPIFlash_Device_t XIAO_FLASH_DEVICES[] = { P25Q16H_DEVICE };
 
 static const uint32_t FLASH_BASE = 0x000000;
 
-static void waitForLine(String &out) {
-  out = "";
+// Fixed char-buffer line reader. Reads bytes into `buf` until \n, returns
+// length (excluding terminator). Skips \r. Truncates at maxLen-1.
+static size_t readLineFixed(char* buf, size_t maxLen) {
+  size_t n = 0;
   while (true) {
     while (!Serial.available()) { /* spin */ }
-    char c = (char)Serial.read();
-    if (c == '\n') return;
-    if (c != '\r') out += c;
+    int b = Serial.read();
+    if (b < 0) continue;
+    char c = (char)b;
+    if (c == '\n') { buf[n] = 0; return n; }
+    if (c == '\r') continue;
+    if (n + 1 < maxLen) buf[n++] = c;
   }
+}
+
+// Parse a decimal uint32_t from a C string. Returns true on success.
+static bool parseU32(const char* s, uint32_t& out) {
+  if (!s || !*s) return false;
+  uint32_t v = 0;
+  for (; *s; s++) {
+    if (*s < '0' || *s > '9') return false;
+    v = v * 10 + (uint32_t)(*s - '0');
+  }
+  out = v;
+  return true;
+}
+
+static void sendLine(const char* msg) {
+  Serial.println(msg);
+  Serial.flush();
 }
 
 void setup() {
   Serial.begin(115200);
   while (!Serial) { delay(10); }
-  Serial.println("OROFLASHER v1");
+  sendLine("OROFLASHER v1");
 
   if (!flash.begin(XIAO_FLASH_DEVICES, 1)) {
-    Serial.println("ERR flash.begin failed");
+    sendLine("ERR flash.begin failed");
     while (1) { delay(1000); }
   }
   Serial.print("JEDEC ID 0x"); Serial.println(flash.getJEDECID(), HEX);
   Serial.print("Size bytes "); Serial.println(flash.size());
+  Serial.flush();
 }
 
 void loop() {
-  String line;
-  waitForLine(line);
+  char line[64];
+  size_t n = readLineFixed(line, sizeof(line));
 
-  if (line == "PING") {
-    Serial.println("OROFLASHER v1");
+  // Diagnostic echo so the host can see exactly what line we parsed.
+  Serial.print("DBG got '"); Serial.print(line); Serial.print("' len=");
+  Serial.println((unsigned)n);
+  Serial.flush();
+
+  if (strcmp(line, "PING") == 0) {
+    sendLine("OROFLASHER v1");
   }
-  else if (line == "ERASE") {
-    if (!flash.eraseChip()) { Serial.println("ERR erase"); return; }
+  else if (strcmp(line, "ERASE") == 0) {
+    if (!flash.eraseChip()) { sendLine("ERR erase"); return; }
     flash.waitUntilReady();
-    Serial.println("ERASED");
+    sendLine("ERASED");
   }
-  else if (line.startsWith("WRITE ")) {
-    uint32_t len = (uint32_t)line.substring(6).toInt();
+  else if (strncmp(line, "WRITE ", 6) == 0) {
+    uint32_t len = 0;
+    if (!parseU32(line + 6, len)) { sendLine("ERR write parse"); return; }
     if (len == 0 || len > flash.size()) {
       Serial.print("ERR length "); Serial.println(len);
+      Serial.flush();
       return;
     }
-    Serial.println("READY");
+    sendLine("READY");
     uint32_t addr = FLASH_BASE;
     uint8_t buf[256];
     uint32_t remaining = len;
     while (remaining > 0) {
       uint32_t chunk = remaining > sizeof(buf) ? sizeof(buf) : remaining;
       uint32_t got = 0;
+      uint32_t last = millis();
       while (got < chunk) {
         int b = Serial.read();
-        if (b < 0) continue;
+        if (b < 0) {
+          if (millis() - last > 5000) {
+            Serial.print("ERR rx timeout at 0x"); Serial.println(addr, HEX);
+            Serial.flush();
+            return;
+          }
+          continue;
+        }
         buf[got++] = (uint8_t)b;
+        last = millis();
       }
-      if (flash.writeBuffer(addr, buf, chunk) != (int)chunk) {
+      if (flash.writeBuffer(addr, buf, chunk) != chunk) {
         Serial.print("ERR write at 0x"); Serial.println(addr, HEX);
+        Serial.flush();
         return;
       }
       addr += chunk;
@@ -115,24 +155,25 @@ void loop() {
     }
     flash.waitUntilReady();
     Serial.print("WROTE "); Serial.println(len);
+    Serial.flush();
   }
-  else if (line.startsWith("VERIFY ")) {
-    uint32_t len = (uint32_t)line.substring(7).toInt();
-    if (len < 4) len = 4;
+  else if (strncmp(line, "VERIFY ", 7) == 0) {
     uint8_t magic[4];
     flash.readBuffer(FLASH_BASE, magic, 4);
     if (magic[0]=='O' && magic[1]=='R' && magic[2]=='O' && magic[3]=='A') {
-      Serial.println("MAGIC OROA");
+      sendLine("MAGIC OROA");
     } else {
       Serial.print("MAGIC BAD ");
       for (int i=0;i<4;i++) { if (magic[i]<16) Serial.print('0'); Serial.print(magic[i], HEX); }
       Serial.println();
+      Serial.flush();
     }
   }
-  else if (line == "DONE") {
-    Serial.println("BYE");
+  else if (strcmp(line, "DONE") == 0) {
+    sendLine("BYE");
   }
-  else if (line.length() > 0) {
-    Serial.print("ERR unknown "); Serial.println(line);
+  else if (n > 0) {
+    Serial.print("ERR unknown '"); Serial.print(line); Serial.println("'");
+    Serial.flush();
   }
 }
