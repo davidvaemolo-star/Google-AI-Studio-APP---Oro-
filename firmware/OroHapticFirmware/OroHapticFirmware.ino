@@ -25,6 +25,7 @@
 #include "LSM6DS3.h"  // Use Seeed_Arduino_LSM6DS3 library
 #include "audio_i2s.h"  // I2S audio playback for MAX98357A
 #include "audio_prompts.h"  // Voice prompt audio data
+#include "external_audio.h"
 
 // ============================================================================
 // HARDWARE CONFIGURATION
