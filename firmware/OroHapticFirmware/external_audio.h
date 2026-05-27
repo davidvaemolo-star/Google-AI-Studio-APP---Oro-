@@ -6,8 +6,8 @@
  *
  * Usage:
  *   externalAudio.begin();                         // call once in setup()
- *   externalAudio.playSummary(audioEventId, vol);  // returns false on failure
- *                                                  // caller falls back to chime
+ *   externalAudio.playSummary(audioEventId, vol, audioPlayer);  // returns false on failure
+ *                                                              // caller falls back to chime
  */
 #ifndef EXTERNAL_AUDIO_H
 #define EXTERNAL_AUDIO_H
