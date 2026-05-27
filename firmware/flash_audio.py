@@ -42,7 +42,8 @@ def main():
     if not os.path.exists(args.blob):
         print(f"ERROR: blob not found at {args.blob}. Run build_audio_blob.py first.", file=sys.stderr)
         sys.exit(1)
-    blob = open(args.blob, "rb").read()
+    with open(args.blob, "rb") as f:
+        blob = f.read()
     print(f"Blob: {args.blob}  ({len(blob)} bytes)")
 
     with serial.Serial(args.port, args.baud, timeout=5) as ser:
@@ -57,7 +58,7 @@ def main():
 
         ser.write(f"WRITE {len(blob)}\n".encode()); print(f"-> WRITE {len(blob)}")
         expect(ser, "READY")
-        # Stream in 4 KB chunks, brief pause so the device can keep up.
+        # Stream in 4 KB chunks; flush after each so the OS buffer doesn't grow unbounded.
         CHUNK = 4096
         for i in range(0, len(blob), CHUNK):
             ser.write(blob[i:i+CHUNK])
