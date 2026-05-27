@@ -55,9 +55,12 @@ def resample_to_16k_mono_pcm(src_wav, dst_wav):
 
 def read_pcm_samples(wav_path):
     with wave.open(wav_path, "rb") as w:
-        assert w.getnchannels() == 1, f"{wav_path} not mono"
-        assert w.getsampwidth() == 2, f"{wav_path} not 16-bit"
-        assert w.getframerate() == 16000, f"{wav_path} not 16 kHz"
+        if w.getnchannels() != 1:
+            raise RuntimeError(f"{wav_path}: expected mono, got {w.getnchannels()} channels")
+        if w.getsampwidth() != 2:
+            raise RuntimeError(f"{wav_path}: expected 16-bit (2 bytes), got {w.getsampwidth()} bytes")
+        if w.getframerate() != 16000:
+            raise RuntimeError(f"{wav_path}: expected 16 kHz, got {w.getframerate()} Hz")
         n = w.getnframes()
         return w.readframes(n), n
 
