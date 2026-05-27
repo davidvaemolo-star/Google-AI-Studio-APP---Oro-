@@ -48,7 +48,7 @@ A paddler's physical position within their canoe, numbered 1–6 front to back. 
 _Avoid_: position, slot, index
 
 **Pacer**:
-The single device whose Catch sets the timing reference for all Followers across all canoes. There is exactly one Pacer per session. Designated by the coach, not assumed to be any specific seat.
+The single device whose Catch sets the timing reference for all Followers across all canoes. There is exactly one Pacer per session. The Pacer is always the device assigned to Seat 1 — the coach designates the Pacer by assigning a device to that seat.
 _Avoid_: leader, master
 
 **Follower**:
@@ -113,8 +113,12 @@ The aggregate synchronisation state across all connected followers in a session.
 A named bracket for the crew's overall Sync Score: Poor (0–49), Good (50–79), Excellent (80–100).
 _Avoid_: sync level, sync tier, sync category
 
+**Session Outcome**:
+The computed end-of-session result: a Sync Rating, a Power Range, and the raw Sync Score. Produced once at session end from the recorded stroke latencies and the recorded strokes. Pure data — does not know about audio prompts or screens.
+_Avoid_: result, outcome data, score
+
 **Session Summary**:
-An end-of-session report covering Sync Rating and Power Range. The Training Controller displays both a crew-wide aggregate and a per-canoe breakdown. All devices receive the same crew-wide voice prompt — one of 12 pre-recorded prompts selected by Sync Rating (Poor/Good/Excellent) × Power Range (Light/Moderate/Strong/Maximum).
+The end-of-session report shown to the coach and broadcast to all devices. Built from a Session Outcome. The Training Controller displays both a crew-wide aggregate and a per-canoe breakdown. All devices receive the same crew-wide voice prompt — one of 12 pre-recorded prompts selected by Sync Rating (Poor/Good/Excellent) × Power Range (Light/Moderate/Strong/Maximum).
 _Avoid_: results, stats, report
 
 ### Tools
@@ -156,8 +160,9 @@ _Avoid_: Android app, mobile app
 - **Power Range boundaries**: Light/Moderate/Strong/Maximum split at 25%/50%/75% are placeholders — to be validated against field data.
 - **Sync Score thresholds**: The 50ms (perfect) and 300ms (zero) latency bounds are placeholders — not validated against biomechanical perception thresholds or real BLE round-trip measurements.
 - **FSR secondary Catch confirmation**: `sessionAverageFsrPeak()` now feeds Power Range in the Session Summary. Remaining: use Top Hand Pressure as a secondary confirmation gate for Catch detection.
+- **Calibration removal**: Firmware currently requires a per-device calibration step to set the IMU stroke detection threshold (55% of the paddler's peak acceleration). The fixed default (1.0g, derived from real paddle data) may be sufficient for all crew members. To be validated against field data — if consistent, the Calibration step and Ready state could be removed from the pre-session flow.
 
 ## Known constraints to resolve
 
 - **Firmware 6-device limit**: firmware and Android BLE code caps at 6 simultaneous connections. Two OC6 canoes requires 12. This limit must be lifted.
-- **Seat 1 = Pacer assumption**: Android code hardcodes seat 1 as the Pacer. Must become coach-designated.
+- **Seat 1 = Pacer assumption**: Android still defaults all devices to Follower when sending Zone Settings. BLE protocol now supports role designation (role byte added to Zone Settings packet; firmware reads it). Remaining: Training Controller UI for coach to designate the Pacer before a session.

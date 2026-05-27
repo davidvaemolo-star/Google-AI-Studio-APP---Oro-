@@ -4,6 +4,7 @@ import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.orotrain.oro.analysis.StrokeAnalyzer
+import com.orotrain.oro.audio.sessionSummaryAudioPromptFor
 import com.orotrain.oro.coaching.CoachingEngine
 import com.orotrain.oro.ble.BleManager
 import com.orotrain.oro.data.SessionRepository
@@ -20,6 +21,7 @@ import com.orotrain.oro.model.MAX_ZONES
 import com.orotrain.oro.model.MIN_SPM
 import com.orotrain.oro.model.MIN_VALUE
 import com.orotrain.oro.model.OroUiState
+import com.orotrain.oro.model.SessionOutcome
 import com.orotrain.oro.model.TrainingSessionState
 import com.orotrain.oro.model.Zone
 import com.orotrain.oro.model.ZoneField
@@ -359,8 +361,11 @@ class MainViewModel(
             )
         } else {
             // All zones complete - finish training
-            val summaryEvent = selectSessionSummaryPrompt(_uiState.value.trainingSession, strokeAnalyzer)
-            broadcastAudioPrompt(summaryEvent, 100)
+            val outcome = SessionOutcome.compute(
+                followerLatenciesMs = _uiState.value.trainingSession.syncQuality.values,
+                strokeFsrPeakPercents = strokeAnalyzer.getAllStrokes().map { it.fsrPeakPercent }
+            )
+            broadcastAudioPrompt(sessionSummaryAudioPromptFor(outcome), 100)
 
             stopTrainingSession()
             session.copy(
@@ -398,47 +403,6 @@ class MainViewModel(
             intensity = intensity,
             includePacer = true  // Include pacer so all devices pulse together
         )
-    }
-
-    private fun selectSessionSummaryPrompt(
-        trainingSession: TrainingSessionState,
-        strokeAnalyzer: StrokeAnalyzer
-    ): Byte {
-        val avgLatencyMs = if (trainingSession.syncQuality.isEmpty()) 300.0
-                           else trainingSession.syncQuality.values.average()
-        val syncScore = ((300.0 - avgLatencyMs) / 250.0 * 100.0).coerceIn(0.0, 100.0).toInt()
-
-        val avgFsrPeak = strokeAnalyzer.sessionAverageFsrPeak()
-
-        val powerEvent: (Byte, Byte, Byte, Byte) -> Byte = { light, moderate, strong, maximum ->
-            when {
-                avgFsrPeak >= 76 -> maximum
-                avgFsrPeak >= 51 -> strong
-                avgFsrPeak >= 26 -> moderate
-                else             -> light
-            }
-        }
-
-        return when {
-            syncScore >= 80 -> powerEvent(
-                BleManager.AUDIO_SUMMARY_EXCELLENT_LIGHT,
-                BleManager.AUDIO_SUMMARY_EXCELLENT_MODERATE,
-                BleManager.AUDIO_SUMMARY_EXCELLENT_STRONG,
-                BleManager.AUDIO_SUMMARY_EXCELLENT_MAXIMUM
-            )
-            syncScore >= 50 -> powerEvent(
-                BleManager.AUDIO_SUMMARY_GOOD_LIGHT,
-                BleManager.AUDIO_SUMMARY_GOOD_MODERATE,
-                BleManager.AUDIO_SUMMARY_GOOD_STRONG,
-                BleManager.AUDIO_SUMMARY_GOOD_MAXIMUM
-            )
-            else -> powerEvent(
-                BleManager.AUDIO_SUMMARY_POOR_LIGHT,
-                BleManager.AUDIO_SUMMARY_POOR_MODERATE,
-                BleManager.AUDIO_SUMMARY_POOR_STRONG,
-                BleManager.AUDIO_SUMMARY_POOR_MAXIMUM
-            )
-        }
     }
 
     private fun broadcastAudioPrompt(audioEvent: Byte, volume: Int = 90) {
