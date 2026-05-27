@@ -386,8 +386,17 @@ python flash_audio.py --port COMx
 
 (Replace `COMx` with whichever port the XIAO is on — check Arduino IDE → Tools → Port.)
 
-Expected output ends with:
+Expected output (lines starting with `<-` are replies from the device):
+
 ```
+Blob: .../audio_blob.bin  (727862 bytes)
+-> PING
+  <- OROFLASHER v1
+-> ERASE
+  <- ERASED
+-> WRITE 727862
+  <- READY
+  <- WROTE 727862
 -> VERIFY 4
   <- MAGIC OROA
 -> DONE
