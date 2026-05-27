@@ -29,6 +29,28 @@
 
 Adafruit_SPIFlash flash(&flashTransport);
 
+// XIAO nRF52840 Sense Plus ships with a Puya P25Q16H (2 MB QSPI).
+// Older Adafruit_SPIFlash releases don't have this chip in their default
+// device list, so flash.begin() can't auto-detect it. Pass the descriptor
+// explicitly. JEDEC: 85 60 15.
+static const SPIFlash_Device_t P25Q16H_DEVICE = {
+  .total_size                  = (1UL << 21),  // 2 MB
+  .start_up_time_us            = 10000,
+  .manufacturer_id             = 0x85,
+  .memory_type                 = 0x60,
+  .capacity                    = 0x15,
+  .max_clock_speed_mhz         = 55,
+  .quad_enable_bit_mask        = 0x02,
+  .has_sector_protection       = false,
+  .supports_fast_read          = true,
+  .supports_qspi               = true,
+  .supports_qspi_writes        = true,
+  .write_status_register_split = false,
+  .single_status_byte          = true,
+  .is_fram                     = false,
+};
+static const SPIFlash_Device_t XIAO_FLASH_DEVICES[] = { P25Q16H_DEVICE };
+
 static const uint32_t FLASH_BASE = 0x000000;
 
 static void waitForLine(String &out) {
@@ -46,7 +68,7 @@ void setup() {
   while (!Serial) { delay(10); }
   Serial.println("OROFLASHER v1");
 
-  if (!flash.begin()) {
+  if (!flash.begin(XIAO_FLASH_DEVICES, 1)) {
     Serial.println("ERR flash.begin failed");
     while (1) { delay(1000); }
   }
