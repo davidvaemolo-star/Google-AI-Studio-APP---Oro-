@@ -390,6 +390,11 @@ void setup() {
   } else {
     Serial.println("WARNING: Failed to initialize I2S audio - continuing without audio");
   }
+  if (externalAudio.begin()) {
+    Serial.println("External audio ready (session summary prompts on QSPI).");
+  } else {
+    Serial.println("External audio NOT ready -- summary will use chime fallback.");
+  }
 
   // Initialize BLE
   if (!initializeBLE()) {
@@ -1238,8 +1243,14 @@ void playAudioEvent(uint8_t audioEvent, uint8_t volume) {
     case AUDIO_SUMMARY_EXCELLENT_MODERATE:
     case AUDIO_SUMMARY_EXCELLENT_STRONG:
     case AUDIO_SUMMARY_EXCELLENT_MAXIMUM:
-      Serial.println("Playing: session summary tone");
-      playSummaryTone();
+      Serial.print("Playing: session summary voice 0x");
+      Serial.println(audioEvent, HEX);
+      if (externalAudio.playSummary(audioEvent, volume, audioPlayer)) {
+        Serial.println("Summary voice OK");
+      } else {
+        Serial.println("Summary voice failed -- chime fallback");
+        playSummaryTone();
+      }
       return;
 
     default:
