@@ -68,6 +68,10 @@ void loop() {
   }
   else if (line.startsWith("WRITE ")) {
     uint32_t len = (uint32_t)line.substring(6).toInt();
+    if (len == 0 || len > flash.size()) {
+      Serial.print("ERR length "); Serial.println(len);
+      return;
+    }
     Serial.println("READY");
     uint32_t addr = FLASH_BASE;
     uint8_t buf[256];
