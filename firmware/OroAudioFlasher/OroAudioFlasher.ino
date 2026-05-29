@@ -44,9 +44,16 @@ static const SPIFlash_Device_t P25Q16H_DEVICE = {
   .has_sector_protection       = false,
   .supports_fast_read          = true,
   .supports_qspi               = true,
-  .supports_qspi_writes        = true,
+  // The Puya P25Q16H keeps its Quad-Enable (QE) bit in Status Register-2, so it
+  // is NOT a single-status-byte chip. The earlier descriptor wrongly said it
+  // was, so QE was being written to the wrong place and never actually got set
+  // — which broke every quad operation: quad PROGRAM wedged, and quad READ
+  // returned garbage (0x88...). With single_status_byte = false the library
+  // sets QE in SR2 correctly, so quad reads work. We still keep quad WRITES off
+  // (single-lane program is reliable for this one-time load).
+  .supports_qspi_writes        = false,
   .write_status_register_split = false,
-  .single_status_byte          = true,
+  .single_status_byte          = false,
   .is_fram                     = false,
 };
 static const SPIFlash_Device_t XIAO_FLASH_DEVICES[] = { P25Q16H_DEVICE };
@@ -88,7 +95,7 @@ static void sendLine(const char* msg) {
 void setup() {
   Serial.begin(115200);
   while (!Serial) { delay(10); }
-  sendLine("OROFLASHER v1");
+  sendLine("OROFLASHER v7");
 
   if (!flash.begin(XIAO_FLASH_DEVICES, 1)) {
     sendLine("ERR flash.begin failed");
@@ -109,7 +116,7 @@ void loop() {
   Serial.flush();
 
   if (strcmp(line, "PING") == 0) {
-    sendLine("OROFLASHER v1");
+    sendLine("OROFLASHER v7");
   }
   else if (strcmp(line, "ERASE") == 0) {
     if (!flash.eraseChip()) { sendLine("ERR erase"); return; }
@@ -125,17 +132,23 @@ void loop() {
       return;
     }
     sendLine("READY");
+    // Handshaked block transfer: the host sends one BLOCK-sized chunk, we write
+    // it to flash, then reply "OK <bytesWrittenSoFar>". The host waits for that
+    // reply before sending the next block, so it can never outrun us and the two
+    // sides can never deadlock. BLOCK is 4 KB to match the chip's sector size,
+    // so each block lands in exactly one sector (one flush, no churn).
+    const uint32_t BLOCK = 4096;
+    static uint8_t buf[BLOCK];   // static: too big for the stack
     uint32_t addr = FLASH_BASE;
-    uint8_t buf[256];
     uint32_t remaining = len;
     while (remaining > 0) {
-      uint32_t chunk = remaining > sizeof(buf) ? sizeof(buf) : remaining;
+      uint32_t chunk = remaining > BLOCK ? BLOCK : remaining;
       uint32_t got = 0;
       uint32_t last = millis();
       while (got < chunk) {
         int b = Serial.read();
         if (b < 0) {
-          if (millis() - last > 5000) {
+          if (millis() - last > 10000) {
             Serial.print("ERR rx timeout at 0x"); Serial.println(addr, HEX);
             Serial.flush();
             return;
@@ -145,21 +158,46 @@ void loop() {
         buf[got++] = (uint8_t)b;
         last = millis();
       }
-      if (flash.writeBuffer(addr, buf, chunk) != chunk) {
-        Serial.print("ERR write at 0x"); Serial.println(addr, HEX);
-        Serial.flush();
-        return;
+      // Program the block directly through the transport, one 256-byte page at a
+      // time, bypassing the SPIFlash caching layer entirely. The chip was fully
+      // erased by the ERASE step, so erased cells are 0xFF and can be programmed
+      // without a per-sector erase first. After each page we poll the chip's
+      // busy (WIP) bit with a 3-second cap, so a wedged chip reports its status
+      // register value instead of hanging forever.
+      bool progOk = true;
+      for (uint32_t off = 0; off < chunk && progOk; off += 256) {
+        uint32_t pageLen = (chunk - off) < 256 ? (chunk - off) : 256;
+        flashTransport.runCommand(0x06);                       // WRITE ENABLE
+        flashTransport.writeMemory(addr + off, buf + off, pageLen);  // PAGE PROGRAM
+        uint8_t sr = 0x01;
+        uint32_t t0 = millis();
+        while (true) {
+          flashTransport.readCommand(0x05, &sr, 1);            // READ STATUS REG
+          if (!(sr & 0x01)) break;                             // WIP clear -> page done
+          if (millis() - t0 > 3000) {
+            Serial.print("ERR wip timeout at 0x"); Serial.print(addr + off, HEX);
+            Serial.print(" sr=0x"); Serial.println(sr, HEX);
+            Serial.flush();
+            progOk = false;
+            break;
+          }
+        }
       }
+      if (!progOk) return;
       addr += chunk;
       remaining -= chunk;
+      // Confirm this block so the host releases the next one.
+      Serial.print("OK "); Serial.println(addr - FLASH_BASE);
+      Serial.flush();
     }
-    flash.waitUntilReady();
     Serial.print("WROTE "); Serial.println(len);
     Serial.flush();
   }
   else if (strncmp(line, "VERIFY ", 7) == 0) {
+    // Read straight through the transport, bypassing the SPIFlash caching layer
+    // (which wedges on this chip) and any stale cache left over from writing.
     uint8_t magic[4];
-    flash.readBuffer(FLASH_BASE, magic, 4);
+    flashTransport.readMemory(FLASH_BASE, magic, 4);
     if (magic[0]=='O' && magic[1]=='R' && magic[2]=='O' && magic[3]=='A') {
       sendLine("MAGIC OROA");
     } else {

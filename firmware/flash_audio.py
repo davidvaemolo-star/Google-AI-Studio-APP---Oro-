@@ -46,7 +46,7 @@ def main():
         blob = f.read()
     print(f"Blob: {args.blob}  ({len(blob)} bytes)")
 
-    with serial.Serial(args.port, args.baud, timeout=5) as ser:
+    with serial.Serial(args.port, args.baud, timeout=5, write_timeout=30) as ser:
         time.sleep(2.0)  # let the board settle / USB CDC enumerate
         ser.reset_input_buffer()
 
@@ -58,11 +58,20 @@ def main():
 
         ser.write(f"WRITE {len(blob)}\n".encode()); print(f"-> WRITE {len(blob)}")
         expect(ser, "READY")
-        # Stream in 4 KB chunks; flush after each so the OS buffer doesn't grow unbounded.
+        # Handshaked block transfer: send one 4 KB block, wait for the device's
+        # "OK <bytes>" confirmation, then send the next. This paces the stream to
+        # the device's write speed so the two sides can never deadlock. The
+        # write_timeout on the port means a wedged device raises an error in
+        # seconds instead of hanging forever.
         CHUNK = 4096
-        for i in range(0, len(blob), CHUNK):
+        total = len(blob)
+        for i in range(0, total, CHUNK):
             ser.write(blob[i:i+CHUNK])
             ser.flush()
+            line = expect(ser, "OK", timeout=30.0)
+            sent = i + CHUNK if i + CHUNK < total else total
+            pct = int(sent * 100 / total)
+            print(f"  ...{sent}/{total} bytes ({pct}%)  device={line}")
         expect(ser, "WROTE", timeout=60.0)
 
         ser.write(b"VERIFY 4\n");       print("-> VERIFY 4")

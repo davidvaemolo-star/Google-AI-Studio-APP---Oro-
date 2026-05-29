@@ -28,7 +28,11 @@ static const SPIFlash_Device_t P25Q16H_DEVICE = {
   .supports_qspi               = true,
   .supports_qspi_writes        = true,
   .write_status_register_split = false,
-  .single_status_byte          = true,
+  // The Puya P25Q16H keeps its Quad-Enable (QE) bit in Status Register-2, so it
+  // is NOT a single-status-byte chip. Marking it as one stops the library from
+  // ever setting QE, which makes quad reads return garbage (0x88...) — the chip
+  // reads back as "bad magic" even when the prompts are present. Must be false.
+  .single_status_byte          = false,
   .is_fram                     = false,
 };
 static const SPIFlash_Device_t XIAO_FLASH_DEVICES[] = { P25Q16H_DEVICE };

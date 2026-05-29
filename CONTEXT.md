@@ -118,7 +118,7 @@ The computed end-of-session result: a Sync Rating, a Power Range, and the raw Sy
 _Avoid_: result, outcome data, score
 
 **Session Summary**:
-The end-of-session report shown to the coach and broadcast to all devices. Built from a Session Outcome. The Training Controller displays both a crew-wide aggregate and a per-canoe breakdown. All devices receive the same crew-wide voice prompt — one of 12 pre-recorded prompts selected by Sync Rating (Poor/Good/Excellent) × Power Range (Light/Moderate/Strong/Maximum).
+The end-of-session report shown to the coach and broadcast to all devices. Built from a Session Outcome. The Training Controller displays both a crew-wide aggregate and a per-canoe breakdown. All devices receive the same crew-wide voice prompt — one of 12 pre-recorded prompts selected by Sync Rating (Poor/Good/Excellent) × Power Range (Light/Moderate/Strong/Maximum). The 12 prompts are stored on each device's own external flash chip (loaded once at the factory) and played back during the session. If a device cannot read its stored prompt, it falls back to a short three-note chime so the session always ends with an audible cue.
 _Avoid_: results, stats, report
 
 ### Tools
