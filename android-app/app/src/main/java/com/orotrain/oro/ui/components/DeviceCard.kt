@@ -35,6 +35,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.orotrain.oro.model.CalibrationState
 import com.orotrain.oro.model.DeviceStatus
 import com.orotrain.oro.model.HapticDevice
 import com.orotrain.oro.ui.theme.AccentCyan
@@ -154,7 +155,7 @@ fun DeviceCard(
 
             // Show stroke count and calibration status
             if (device.status == DeviceStatus.Connected) {
-                if (device.isCalibrating) {
+                if (device.calibrationState == CalibrationState.InProgress) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -239,7 +240,7 @@ fun DeviceCard(
             if (device.status == DeviceStatus.Connected) {
                 Button(
                     onClick = {
-                        if (device.isCalibrating) {
+                        if (device.calibrationState == CalibrationState.InProgress) {
                             onStopCalibration?.invoke(device.id)
                         } else {
                             onStartCalibration?.invoke(device.id)
@@ -248,13 +249,13 @@ fun DeviceCard(
                     enabled = onStartCalibration != null && onStopCalibration != null,
                     modifier = Modifier,
                     colors = ButtonDefaults.buttonColors(
-                        containerColor = if (device.isCalibrating) Color(0xFFEE5253) else Color(0xFFFFC24B),
+                        containerColor = if (device.calibrationState == CalibrationState.InProgress) Color(0xFFEE5253) else Color(0xFFFFC24B),
                         disabledContainerColor = Color(0xFFFFC24B).copy(alpha = 0.4f)
                     ),
                     contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
                 ) {
                     Text(
-                        text = if (device.isCalibrating) "Stop Cal" else "Calibrate",
+                        text = if (device.calibrationState == CalibrationState.InProgress) "Stop Cal" else "Calibrate",
                         style = MaterialTheme.typography.bodySmall,
                         color = Charcoal
                     )

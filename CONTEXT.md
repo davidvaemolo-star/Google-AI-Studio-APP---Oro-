@@ -93,11 +93,11 @@ _Avoid_: pressure zone, force level, intensity (reserved for Zone intensity)
 ### Device lifecycle
 
 **Calibration**:
-A pre-session setup step where a device samples the paddler's stroke motion to set its detection threshold. A device must complete calibration before it is ready for training.
-_Avoid_: tuning, threshold setup
+A pre-session setup step where a device samples the paddler's stroke motion to set its detection threshold. A device must complete calibration before it is ready for training. Calibration progresses through three mutually-exclusive states — **Not Started**, **In Progress**, **Complete** — mirroring the firmware's calibration lifecycle (ADR-0003). This is a single state, not a pair of booleans.
+_Avoid_: tuning, threshold setup; isCalibrating/isCalibrationComplete flag pair
 
 **Ready**:
-The state of a device that has completed calibration and can participate in a session.
+The state of a device whose Calibration is Complete and can participate in a session.
 _Avoid_: calibrated, connected (connected means BLE link only, not readiness for training)
 
 ### Synchronisation
@@ -165,4 +165,3 @@ _Avoid_: Android app, mobile app
 ## Known constraints to resolve
 
 - **Firmware 6-device limit**: firmware and Android BLE code caps at 6 simultaneous connections. Two OC6 canoes requires 12. This limit must be lifted.
-- **Seat 1 = Pacer assumption**: Android still defaults all devices to Follower when sending Zone Settings. BLE protocol now supports role designation (role byte added to Zone Settings packet; firmware reads it). Remaining: Training Controller UI for coach to designate the Pacer before a session.

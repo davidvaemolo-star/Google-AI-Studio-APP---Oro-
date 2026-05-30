@@ -1181,108 +1181,71 @@ void playSummaryTone() {
   audioPlayer.playTone(784, 300, 90);
 }
 
+// Simple voice prompts that play a single flash-resident buffer. Beeps (which call a tone routine)
+// and session-summary prompts (which stream from QSPI) are handled separately in playAudioEvent.
+// Adding a new flash prompt is one row here — no new case arm, no risk of a mismatched _SIZE.
+struct FlashPrompt {
+  uint8_t event;
+  const int16_t* data;
+  uint32_t size;
+  const char* label;
+};
+
+static const FlashPrompt FLASH_PROMPTS[] = {
+  { AUDIO_POWER_ON,       audio_prompt_power_on,       audio_prompt_power_on_SIZE,       "power on (Oro)" },
+  { AUDIO_LAST_SET,       audio_prompt_last_set,       audio_prompt_last_set_SIZE,       "last set" },
+  { AUDIO_NEXT_SET_LOW,   audio_prompt_next_set_low,   audio_prompt_next_set_low_SIZE,   "next set low" },
+  { AUDIO_NEXT_SET_MEDIUM,audio_prompt_next_set_medium,audio_prompt_next_set_medium_SIZE,"next set medium" },
+  { AUDIO_NEXT_SET_HIGH,  audio_prompt_next_set_high,  audio_prompt_next_set_high_SIZE,  "next set high" },
+};
+
+// Returns true for any session-summary event (Sync Rating x Power Range grid).
+static bool isSummaryEvent(uint8_t audioEvent) {
+  return audioEvent >= AUDIO_SUMMARY_POOR_LIGHT && audioEvent <= AUDIO_SUMMARY_EXCELLENT_MAXIMUM;
+}
+
 void playAudioEvent(uint8_t audioEvent, uint8_t volume) {
   Serial.print("Audio event: 0x");
-  Serial.print(audioEvent, HEX);
-  Serial.print(" (");
+  Serial.println(audioEvent, HEX);
 
-  // Select audio buffer and size based on event
-  const int16_t* audioData = nullptr;
-  uint32_t audioSize = 0;
-
-  switch (audioEvent) {
-    case AUDIO_SESSION_START_BEEP:
-      Serial.println("Playing: session start beeps");
-      playSessionStartBeeps();
-      return;
-
-    case AUDIO_SET_CHANGEOVER_BEEP:
-      Serial.println("Playing: set changeover beep");
-      playSetChangeover();
-      return;
-
-    case AUDIO_POWER_ON:
-      Serial.println("Playing: power on (Oro)");
-      audioData = audio_prompt_power_on;
-      audioSize = audio_prompt_power_on_SIZE;
-      break;
-
-    case AUDIO_LAST_SET:
-      Serial.println("Playing: last set");
-      audioData = audio_prompt_last_set;
-      audioSize = audio_prompt_last_set_SIZE;
-      break;
-
-    case AUDIO_NEXT_SET_LOW:
-      Serial.println("Playing: next set low");
-      audioData = audio_prompt_next_set_low;
-      audioSize = audio_prompt_next_set_low_SIZE;
-      break;
-
-    case AUDIO_NEXT_SET_MEDIUM:
-      Serial.println("Playing: next set medium");
-      audioData = audio_prompt_next_set_medium;
-      audioSize = audio_prompt_next_set_medium_SIZE;
-      break;
-
-    case AUDIO_NEXT_SET_HIGH:
-      Serial.println("Playing: next set high");
-      audioData = audio_prompt_next_set_high;
-      audioSize = audio_prompt_next_set_high_SIZE;
-      break;
-
-    case AUDIO_SUMMARY_POOR_LIGHT:
-    case AUDIO_SUMMARY_POOR_MODERATE:
-    case AUDIO_SUMMARY_POOR_STRONG:
-    case AUDIO_SUMMARY_POOR_MAXIMUM:
-    case AUDIO_SUMMARY_GOOD_LIGHT:
-    case AUDIO_SUMMARY_GOOD_MODERATE:
-    case AUDIO_SUMMARY_GOOD_STRONG:
-    case AUDIO_SUMMARY_GOOD_MAXIMUM:
-    case AUDIO_SUMMARY_EXCELLENT_LIGHT:
-    case AUDIO_SUMMARY_EXCELLENT_MODERATE:
-    case AUDIO_SUMMARY_EXCELLENT_STRONG:
-    case AUDIO_SUMMARY_EXCELLENT_MAXIMUM:
-      Serial.print("Playing: session summary voice 0x");
-      Serial.println(audioEvent, HEX);
-      if (externalAudio.playSummary(audioEvent, volume, audioPlayer)) {
-        Serial.println("Summary voice OK");
-      } else {
-        Serial.println("Summary voice failed -- chime fallback");
-        playSummaryTone();
-      }
-      return;
-
-    default:
-      Serial.println("Unknown audio event ID");
-      return;
+  // Beeps: synthesized tones, not buffers
+  if (audioEvent == AUDIO_SESSION_START_BEEP) {
+    Serial.println("Playing: session start beeps");
+    playSessionStartBeeps();
+    return;
+  }
+  if (audioEvent == AUDIO_SET_CHANGEOVER_BEEP) {
+    Serial.println("Playing: set changeover beep");
+    playSetChangeover();
+    return;
   }
 
-  Serial.print(") at volume ");
-  Serial.println(volume);
-
-  // Play voice prompt from flash memory
-  if (audioData != nullptr && audioSize > 0) {
-    // Debug: Print pointer address and first few samples
-    Serial.print("Audio data pointer: 0x");
-    Serial.println((uint32_t)audioData, HEX);
-    Serial.print("Audio size: ");
-    Serial.println(audioSize);
-
-    // Try reading samples directly from different offsets (nRF52 reads flash directly)
-    Serial.print("Direct read test - Sample [0]: ");
-    Serial.println(audioData[0]);
-    Serial.print("Direct read test - Sample [500]: ");
-    Serial.println(audioData[500]);
-    Serial.print("Direct read test - Sample [2000]: ");
-    Serial.println(audioData[2000]);
-    Serial.print("Direct read test - Sample [3600]: ");
-    Serial.println(audioData[3600]);
-
-    audioPlayer.playBuffer(audioData, audioSize, volume);
-  } else {
-    Serial.println("ERROR: No audio data for this event!");
+  // Session summary: streamed from QSPI, with a chime fallback if the read fails
+  if (isSummaryEvent(audioEvent)) {
+    Serial.print("Playing: session summary voice 0x");
+    Serial.println(audioEvent, HEX);
+    if (externalAudio.playSummary(audioEvent, volume, audioPlayer)) {
+      Serial.println("Summary voice OK");
+    } else {
+      Serial.println("Summary voice failed -- chime fallback");
+      playSummaryTone();
+    }
+    return;
   }
+
+  // Simple flash-resident prompts
+  for (const FlashPrompt& prompt : FLASH_PROMPTS) {
+    if (prompt.event == audioEvent) {
+      Serial.print("Playing: ");
+      Serial.print(prompt.label);
+      Serial.print(" at volume ");
+      Serial.println(volume);
+      audioPlayer.playBuffer(prompt.data, prompt.size, volume);
+      return;
+    }
+  }
+
+  Serial.println("Unknown audio event ID");
 }
 
 // ============================================================================

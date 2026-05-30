@@ -1237,19 +1237,23 @@ class BleManager(private val context: Context) {
         return stopTraining(deviceId)
     }
 
-    fun broadcastHaptic(
-        command: Byte = CMD_SINGLE_PULSE,
-        pattern: Byte = PATTERN_STRONG_CLICK,
-        intensity: Int = 100,
-        includePacer: Boolean = false
+    /**
+     * Sends a command to every eligible connected device, returning attempted/succeeded counts.
+     *
+     * A device is eligible when it is connected, ready, and either [includePacer] is true or it
+     * is not the pacer. This is the single place the broadcast eligibility rule lives. [send]
+     * performs the per-device write and reports whether it succeeded.
+     */
+    private fun broadcast(
+        label: String,
+        includePacer: Boolean,
+        send: (deviceId: String) -> Boolean
     ): BroadcastResult {
         var attempted = 0
         var succeeded = 0
 
-        Log.d(TAG, "=== broadcastHaptic START ===")
-        Log.d(TAG, "  Command: 0x${String.format("%02X", command)}, Pattern: $pattern, Intensity: $intensity, includePacer: $includePacer")
-        Log.d(TAG, "  Total devices in deviceGattMap: ${deviceGattMap.size}")
-        Log.d(TAG, "  Pacer device ID: $pacerDeviceId")
+        Log.d(TAG, "=== $label START ===")
+        Log.d(TAG, "  includePacer: $includePacer, totalDevices: ${deviceGattMap.size}, pacer: $pacerDeviceId")
 
         deviceGattMap.keys.forEach { deviceId ->
             val isPacer = deviceId == pacerDeviceId
@@ -1261,13 +1265,7 @@ class BleManager(private val context: Context) {
 
             if (shouldSend) {
                 attempted++
-                val result = sendHapticCommand(
-                    deviceId,
-                    command,
-                    intensity = intensity,
-                    pattern = pattern
-                )
-                if (result) {
+                if (send(deviceId)) {
                     succeeded++
                     Log.d(TAG, "    ✓ SUCCESS sending to $deviceId")
                 } else {
@@ -1276,16 +1274,26 @@ class BleManager(private val context: Context) {
             }
         }
 
-        if (attempted == 0) {
-            Log.w(TAG, "broadcastHaptic: NO ELIGIBLE DEVICES (includePacer=$includePacer, totalDevices=${deviceGattMap.size})")
-        } else if (succeeded != attempted) {
-            Log.w(TAG, "broadcastHaptic PARTIAL SUCCESS: $succeeded / $attempted succeeded")
-        } else {
-            Log.d(TAG, "broadcastHaptic COMPLETE SUCCESS: $succeeded / $attempted devices")
+        when {
+            attempted == 0 -> Log.w(TAG, "$label: NO ELIGIBLE DEVICES (includePacer=$includePacer, totalDevices=${deviceGattMap.size})")
+            succeeded != attempted -> Log.w(TAG, "$label PARTIAL SUCCESS: $succeeded / $attempted succeeded")
+            else -> Log.d(TAG, "$label COMPLETE SUCCESS: $succeeded / $attempted devices")
         }
-        Log.d(TAG, "=== broadcastHaptic END ===")
+        Log.d(TAG, "=== $label END ===")
 
         return BroadcastResult(attempted, succeeded)
+    }
+
+    fun broadcastHaptic(
+        command: Byte = CMD_SINGLE_PULSE,
+        pattern: Byte = PATTERN_STRONG_CLICK,
+        intensity: Int = 100,
+        includePacer: Boolean = false
+    ): BroadcastResult {
+        Log.d(TAG, "broadcastHaptic: command=0x${String.format("%02X", command)}, pattern=$pattern, intensity=$intensity")
+        return broadcast("broadcastHaptic", includePacer) { deviceId ->
+            sendHapticCommand(deviceId, command, intensity = intensity, pattern = pattern)
+        }
     }
 
     fun broadcastAudio(
@@ -1293,44 +1301,10 @@ class BleManager(private val context: Context) {
         volume: Int = 80,
         includePacer: Boolean = true
     ): BroadcastResult {
-        var attempted = 0
-        var succeeded = 0
-
-        Log.d(TAG, "=== broadcastAudio START ===")
-        Log.d(TAG, "  Audio Event: 0x${String.format("%02X", audioEvent)}, Volume: $volume, includePacer: $includePacer")
-        Log.d(TAG, "  Total devices in deviceGattMap: ${deviceGattMap.size}")
-        Log.d(TAG, "  Pacer device ID: $pacerDeviceId")
-
-        deviceGattMap.keys.forEach { deviceId ->
-            val isPacer = deviceId == pacerDeviceId
-            val isConnected = deviceStatusMap[deviceId] == DeviceStatus.Connected
-            val isReady = deviceReadyMap[deviceId] == true
-            val shouldSend = isConnected && isReady && (includePacer || !isPacer)
-
-            Log.d(TAG, "  Device $deviceId: isPacer=$isPacer, connected=$isConnected, ready=$isReady, shouldSend=$shouldSend")
-
-            if (shouldSend) {
-                attempted++
-                val result = sendAudioCommand(deviceId, audioEvent, volume)
-                if (result) {
-                    succeeded++
-                    Log.d(TAG, "    ✓ SUCCESS sending audio to $deviceId")
-                } else {
-                    Log.w(TAG, "    ✗ FAILED sending audio to $deviceId")
-                }
-            }
+        Log.d(TAG, "broadcastAudio: event=0x${String.format("%02X", audioEvent)}, volume=$volume")
+        return broadcast("broadcastAudio", includePacer) { deviceId ->
+            sendAudioCommand(deviceId, audioEvent, volume)
         }
-
-        if (attempted == 0) {
-            Log.w(TAG, "broadcastAudio: NO ELIGIBLE DEVICES (includePacer=$includePacer, totalDevices=${deviceGattMap.size})")
-        } else if (succeeded != attempted) {
-            Log.w(TAG, "broadcastAudio PARTIAL SUCCESS: $succeeded / $attempted succeeded")
-        } else {
-            Log.d(TAG, "broadcastAudio COMPLETE SUCCESS: $succeeded / $attempted devices")
-        }
-        Log.d(TAG, "=== broadcastAudio END ===")
-
-        return BroadcastResult(attempted, succeeded)
     }
 
     @SuppressLint("MissingPermission")

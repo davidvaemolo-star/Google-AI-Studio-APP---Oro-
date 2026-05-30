@@ -58,14 +58,13 @@ data class HapticDevice(
     val status: DeviceStatus = DeviceStatus.Disconnected,
     val seat: Int? = null,
     val batteryLevel: Int? = null,
-    val isCalibrating: Boolean = false,
+    val calibrationState: CalibrationState = CalibrationState.NotStarted,
     val strokeThreshold: Float? = null,
     val strokeCount: Int = 0,
     val lastStrokePhase: Byte? = null,
     val calibrationProgress: Int = 0,  // 0-50 strokes
     val calibrationMaxAccel: Float = 0f,
     val calibrationMinAccel: Float = 0f,
-    val isCalibrationComplete: Boolean = false,
     val topHandPressurePercent: Int = 0,
     val topHandPressureThresholdTriggered: Boolean = false
 )
@@ -88,6 +87,18 @@ enum class ZoneLevel {
     Low,    // Green: 30-45 SPM (Recovery/Endurance)
     Medium, // Orange: 46-60 SPM (Tempo)
     High    // Red: 61-80 SPM (Threshold/VO2Max)
+}
+
+/**
+ * Pre-session calibration progress for a device, mirroring the firmware's STATE_CALIBRATING
+ * lifecycle (ADR-0003). Replaces the former isCalibrating/isCalibrationComplete boolean pair,
+ * so the three states are mutually exclusive by construction and the UI can dispatch on them
+ * with an exhaustive `when` instead of an order-sensitive boolean cascade.
+ */
+enum class CalibrationState {
+    NotStarted,
+    InProgress,
+    Complete
 }
 
 data class TrainingSessionState(

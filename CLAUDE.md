@@ -123,8 +123,11 @@ Seats are auto-assigned by device name order when devices connect. The coach can
 ## Known Open Issues
 
 - **6-device BLE cap**: firmware and Android BLE code currently limit connections to 6 devices. Two OC6 canoes needs 12.
-- **Calibration model debt**: `HapticDevice` tracks calibration as `isCalibrating: Boolean` + `isCalibrationComplete: Boolean`. ADR-0003 says this should be a proper enum device state mirroring the firmware's `STATE_CALIBRATING`.
 - **SPM is fixed per intensity level**: `Zone.targetSpm` is a hardcoded midpoint. The BLE protocol supports per-zone SPM; this is not yet surfaced in the UI.
+
+## Deferred Refactors
+
+- **Extract the Programme library out of `MainViewModel`**: the ViewModel still owns two unrelated jobs — running a live session *and* managing the saved-programme CRUD (`createProgramme`/`renameProgramme`/`deleteProgramme`/`duplicateProgramme`/`loadProgramme` + the `editProgrammeZones` family). Moving the programme-library half into its own holder (it already collaborates with `ProgrammeRepository` and `persistProgrammes()`) would separate the two concerns and shrink the file by ~150 lines. This is a pure relocation, not a duplication fix, so the payoff is maintainability only and there is no user-visible change. **Do it opportunistically — the next time a programme-library feature is added — and extract + build the feature in one pass, re-testing on a device.** Not worth a standalone change that risks a working app for an invisible benefit.
 
 ## Key Documentation
 

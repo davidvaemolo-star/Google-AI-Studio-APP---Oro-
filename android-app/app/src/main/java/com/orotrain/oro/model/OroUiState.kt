@@ -21,7 +21,7 @@ data class OroUiState(
     val allDevicesCalibrated: Boolean
         get() = devices
             .filter { it.status == DeviceStatus.Connected }
-            .all { it.isCalibrationComplete }
+            .all { it.calibrationState == CalibrationState.Complete }
 
     val canStartTraining: Boolean
         get() = activeProgramme != null &&
