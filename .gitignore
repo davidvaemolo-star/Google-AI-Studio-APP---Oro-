@@ -1,6 +1,11 @@
 # Android
 *.iml
 .gradle
+# Build output (anchored /build only catches the repo root; cover the Android module too)
+build/
+android-app/.gradle/
+android-app/build/
+android-app/app/build/
 /local.properties
 /.idea/caches
 /.idea/libraries
