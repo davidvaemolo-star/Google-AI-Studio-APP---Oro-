@@ -114,7 +114,7 @@ _Avoid_: sync percentage, match score; "behind" (the gap is symmetric, not just 
 The aggregate synchronisation state across all connected followers in a session.
 
 **Sync Rating**:
-A named bracket for the crew's overall Sync Score: Poor (0–49), Good (50–79), Excellent (80–100).
+A named bracket for a Sync Score — a single Follower's or the crew's overall: Poor (0–49), Good (50–79), Excellent (80–100).
 _Avoid_: sync level, sync tier, sync category
 
 **Session Outcome**:
@@ -122,8 +122,16 @@ The computed end-of-session result: a Sync Rating, a Power Range, and the raw Sy
 _Avoid_: result, outcome data, score
 
 **Session Summary**:
-The end-of-session report shown to the coach and broadcast to all devices. Built from a Session Outcome. The Training Controller displays both a crew-wide aggregate and a per-canoe breakdown. All devices receive the same crew-wide voice prompt — one of 12 pre-recorded prompts selected by Sync Rating (Poor/Good/Excellent) × Power Range (Light/Moderate/Strong/Maximum). The 12 prompts are stored on each device's own external flash chip (loaded once at the factory) and played back during the session. If a device cannot read its stored prompt, it falls back to a short three-note chime so the session always ends with an audible cue.
+The end-of-session report. Built from a Session Outcome. The Training Controller (the phone) shows a crew-wide aggregate and a per-canoe breakdown on screen but stays **silent** — all athlete-facing audio comes from the devices, delivered as the **Crew Roll-Call**.
 _Avoid_: results, stats, report
+
+**Crew Roll-Call**:
+The spoken end-of-session read-out, played on every device in unison. It announces the crew's overall **Sync Rating**, then goes through every occupied **Seat** in order — identified by **Canoe + Seat** when more than one canoe is present — giving that paddler's **Sync Rating** and **Power Range**, so the whole crew hears who synced and who didn't. The **Pacer** (Seat 1) has no **Sync Score**, so its entry names it as the pacer and reads its **Power Range** only. A Follower with no measured sync is read as Not Measured rather than given a rating (ADR-0015).
+_Avoid_: summary voice prompt, leaderboard, results read-out
+
+**Countdown**:
+The synchronised start signal: tones played together on every device, ending in a single haptic buzz on "go", so the crew's first **Catch** is together. A timing cue, so it is tones-and-buzz and never spoken (ADR-0008).
+_Avoid_: start beep, go signal, ready-go
 
 ### Tools
 
@@ -148,7 +156,7 @@ _Avoid_: Android app, mobile app
 - **Catch** detection is *intended* to require an IMU trigger confirmed by a **Top Hand Pressure** rise within a short window (ADR-0004); today detection is IMU-only — the pressure-confirmation gate is still an open item (see Open questions below)
 - A **Follower**'s **Sync Score** is the absolute timing gap between its Catch and the nearest **Pacer** Catch (ADR-0015)
 - A stroke's **Peak Pressure** is the maximum **Top Hand Pressure** during the **Drive** phase; it maps to a **Power Range**
-- A **Session** produces a **Session Summary** with a **Sync Rating** and a crew **Power Range**; the summary is displayed in the **Training Controller** and broadcast to all devices as a pre-recorded voice prompt
+- A **Session** produces a **Session Summary**: a crew **Sync Rating** plus, per **Seat**, that paddler's **Sync Rating** and **Power Range**. It is displayed in the **Training Controller** and spoken on the devices as the **Crew Roll-Call** (the phone itself stays silent)
 
 ## Example dialogue
 

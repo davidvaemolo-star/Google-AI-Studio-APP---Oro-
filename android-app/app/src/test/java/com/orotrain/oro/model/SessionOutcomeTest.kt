@@ -45,6 +45,32 @@ class SessionOutcomeTest {
         assertEquals(PowerRange.Maximum, PowerRange.fromPeakPercent(100))
     }
 
+    // --- SessionOutcome.scoreForGap: shared gap→score conversion, reused per-device (ADR-0016) ---
+
+    @Test fun `scoreForGap maps 50ms to 100`() {
+        assertEquals(100, SessionOutcome.scoreForGap(50.0))
+    }
+
+    @Test fun `scoreForGap maps 300ms to 0`() {
+        assertEquals(0, SessionOutcome.scoreForGap(300.0))
+    }
+
+    @Test fun `scoreForGap maps 175ms to 50`() {
+        assertEquals(50, SessionOutcome.scoreForGap(175.0))
+    }
+
+    @Test fun `scoreForGap clamps below 50ms to 100`() {
+        assertEquals(100, SessionOutcome.scoreForGap(5.0))
+    }
+
+    @Test fun `scoreForGap clamps above 300ms to 0`() {
+        assertEquals(0, SessionOutcome.scoreForGap(750.0))
+    }
+
+    @Test fun `scoreForGap of null gap is null`() {
+        assertNull(SessionOutcome.scoreForGap(null))
+    }
+
     // --- SessionOutcome.compute: Sync Score formula (absolute crew gap, ADR-0015) ---
 
     @Test fun `perfect sync 50ms gap yields score 100 and excellent`() {

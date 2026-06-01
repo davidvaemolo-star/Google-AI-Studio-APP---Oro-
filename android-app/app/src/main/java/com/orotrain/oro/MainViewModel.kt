@@ -4,7 +4,6 @@ import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.orotrain.oro.analysis.StrokeAnalyzer
-import com.orotrain.oro.audio.sessionSummaryAudioPromptFor
 import com.orotrain.oro.coaching.CoachingEngine
 import com.orotrain.oro.ble.BleManager
 import com.orotrain.oro.data.SessionRepository
@@ -17,7 +16,6 @@ import com.orotrain.oro.model.autoAssignSeats
 import com.orotrain.oro.model.swapSeats
 import com.orotrain.oro.model.OroUiState
 import com.orotrain.oro.model.SessionAudioCue
-import com.orotrain.oro.model.SessionOutcome
 import com.orotrain.oro.model.StrokeProgression
 import com.orotrain.oro.model.TrainingSessionState
 import com.orotrain.oro.model.computeStrokeProgression
@@ -39,7 +37,6 @@ import kotlinx.coroutines.launch
 
 class MainViewModel(
     private val bleManager: BleManager? = null,
-    private val audioManager: com.orotrain.oro.audio.AudioManager? = null,
     private val sessionRepository: SessionRepository? = null,
     private val programmeRepository: com.orotrain.oro.data.ProgrammeRepository? = null
 ) : ViewModel() {
@@ -54,8 +51,8 @@ class MainViewModel(
     // Stroke analytics engine
     val strokeAnalyzer = StrokeAnalyzer()
 
-    // Real-time coaching feedback engine
-    private val coachingEngine = CoachingEngine(bleManager, audioManager)
+    // Real-time coaching feedback engine (haptic only — the phone is silent, ADR-0016)
+    private val coachingEngine = CoachingEngine(bleManager)
 
     // Catches recorded during an active Session; the end-of-session Sync Score is computed from
     // these (ADR-0015). lastDeviceTimestampMs detects a mid-session reboot (device clock resets to
@@ -63,6 +60,12 @@ class MainViewModel(
     private val syncLock = Any()
     private val sessionCatchSamples = mutableListOf<com.orotrain.oro.model.CatchSample>()
     private val lastDeviceTimestampMs = mutableMapOf<String, Long>()
+
+    // Per-device Top Hand Pressure peaks for the Crew Roll-Call's per-seat Power Range (ADR-0016):
+    // deviceCurrentStrokePeak is the running max since the device's last Finish; on each Finish it is
+    // appended to deviceStrokePeaks and reset. Same lifecycle as sessionCatchSamples; guarded by syncLock.
+    private val deviceStrokePeaks = mutableMapOf<String, MutableList<Int>>()
+    private val deviceCurrentStrokePeak = mutableMapOf<String, Int>()
 
     init {
         // Observe BLE manager state if available
@@ -168,6 +171,12 @@ class MainViewModel(
             recordCatchForSync(event)
         }
 
+        // On every device's Finish, bank that stroke's peak Top Hand Pressure for its per-seat
+        // Power Range in the Crew Roll-Call (ADR-0016).
+        if (isActive && event.phase == BleManager.STROKE_PHASE_FINISH) {
+            recordStrokePeak(event.deviceId)
+        }
+
         // Compute training progression as a pure value BEFORE the state update. Its side effects
         // (audio, zone reconfigure, session stop) run exactly once after the update commits — never
         // inside the update lambda, which StateFlow.update may re-run under CAS contention.
@@ -257,6 +266,15 @@ class MainViewModel(
         }
     }
 
+    /** Banks the running peak pressure as one stroke's Peak Pressure for [deviceId], then resets it. */
+    private fun recordStrokePeak(deviceId: String) {
+        synchronized(syncLock) {
+            val peak = deviceCurrentStrokePeak[deviceId] ?: 0
+            deviceStrokePeaks.getOrPut(deviceId) { mutableListOf() }.add(peak)
+            deviceCurrentStrokePeak[deviceId] = 0
+        }
+    }
+
     private fun handleCalibrationUpdate(update: BleManager.CalibrationUpdate) {
         _uiState.update { state ->
             val updatedDevices = state.devices.map { device ->
@@ -335,6 +353,13 @@ class MainViewModel(
         // Drive LED feedback based on grip force (during active training)
         if (_uiState.value.trainingSession.status == com.orotrain.oro.model.TrainingStatus.Active) {
             coachingEngine.onFsrUpdate(update.deviceId, update.forcePercent)
+
+            // Track each device's peak Top Hand Pressure within the current stroke for the Crew
+            // Roll-Call's per-seat Power Range (ADR-0016); banked on that device's Finish.
+            synchronized(syncLock) {
+                val prev = deviceCurrentStrokePeak[update.deviceId] ?: 0
+                if (update.forcePercent > prev) deviceCurrentStrokePeak[update.deviceId] = update.forcePercent
+            }
         }
     }
 
@@ -359,15 +384,21 @@ class MainViewModel(
 
         if (progression.sessionComplete) {
             val pacerId = _uiState.value.devices.find { it.seat == 1 }?.id
-            val crewGapMs = synchronized(syncLock) {
-                com.orotrain.oro.model.SyncComputer.crewAverageGapMs(sessionCatchSamples.toList(), pacerId)
+            // Read out by Canoe + Seat order, Pacer (Seat 1) first (ADR-0016). Single canoe → 0.
+            val roster = _uiState.value.devices
+                .filter { it.seat != null }
+                .sortedBy { it.seat }
+                .map { com.orotrain.oro.model.RosterSeat(deviceId = it.id, canoe = 0, seat = it.seat!!) }
+            val rollCall = synchronized(syncLock) {
+                val samples = sessionCatchSamples.toList()
+                val pressures = deviceStrokePeaks.mapValues { it.value.toList() }
+                com.orotrain.oro.model.CrewRollCall.compute(samples, pacerId, roster, pressures)
             }
-            val outcome = SessionOutcome.compute(
-                crewAverageGapMs = crewGapMs,
-                strokeFsrPeakPercents = strokeAnalyzer.getAllStrokes().map { it.fsrPeakPercent }
-            )
-            // Sync Score may be Not Measured (e.g. single-device session) → skip the spoken sync summary.
-            sessionSummaryAudioPromptFor(outcome)?.let { broadcastAudioPrompt(it, 100) }
+            // Hold the per-seat Crew Roll-Call for the on-screen breakdown and the spoken roll-call (ADR-0016).
+            _uiState.update { it.copy(trainingSession = it.trainingSession.copy(crewRollCall = rollCall)) }
+            Log.d(TAG, "Crew Roll-Call: crew=${rollCall.crewSyncRating}, seats=${rollCall.seats}")
+            // Speak the per-seat roll-call on every device, replacing the retired crew summary prompt (ADR-0016).
+            broadcastCrewRollCall(rollCall)
             stopTrainingSession()
         }
     }
@@ -386,6 +417,13 @@ class MainViewModel(
             intensity = intensity,
             includePacer = true  // Include pacer so all devices pulse together
         )
+    }
+
+    /** Loads the Crew Roll-Call onto every device, then triggers them to speak it in unison (ADR-0016). */
+    private fun broadcastCrewRollCall(rollCall: com.orotrain.oro.model.CrewRollCall) {
+        if (rollCall.seats.isEmpty()) return
+        bleManager?.broadcastRollCallLoad(rollCall)
+        bleManager?.broadcastRollCallPlay(volume = 100)
     }
 
     private fun broadcastAudioPrompt(audioEvent: Byte, volume: Int = 90) {
@@ -815,6 +853,8 @@ class MainViewModel(
         synchronized(syncLock) {
             sessionCatchSamples.clear()
             lastDeviceTimestampMs.clear()
+            deviceStrokePeaks.clear()
+            deviceCurrentStrokePeak.clear()
         }
 
         // Set status to Starting
@@ -861,8 +901,7 @@ class MainViewModel(
                 )
             }
 
-            // Audio: Training start announcement
-            audioManager?.announceTrainingStart(state.zones.size)
+            // Audio: synchronized start countdown + GO buzz on the devices (the phone is silent — ADR-0016)
             broadcastAudioPrompt(BleManager.AUDIO_SESSION_START_BEEP, 100)
         }
     }
@@ -903,9 +942,6 @@ class MainViewModel(
             .forEach { device ->
                 pauseDeviceTraining(device.id)
             }
-
-        // Audio: Pause announcement
-        audioManager?.announceTrainingPaused()
     }
 
     fun resumeTrainingSession() {
@@ -931,9 +967,6 @@ class MainViewModel(
             .forEach { device ->
                 resumeDeviceTraining(device.id)
             }
-
-        // Audio: Resume announcement
-        audioManager?.announceTrainingResumed()
     }
 
     fun stopTrainingSession() {
@@ -942,6 +975,8 @@ class MainViewModel(
         synchronized(syncLock) {
             sessionCatchSamples.clear()
             lastDeviceTimestampMs.clear()
+            deviceStrokePeaks.clear()
+            deviceCurrentStrokePeak.clear()
         }
 
         _uiState.update {
@@ -987,7 +1022,6 @@ class MainViewModel(
     override fun onCleared() {
         super.onCleared()
         bleManager?.cleanup()
-        audioManager?.cleanup()
     }
 }
 

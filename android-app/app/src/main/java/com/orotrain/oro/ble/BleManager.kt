@@ -56,6 +56,11 @@ class BleManager(private val context: Context) {
         val CALIBRATION_UUID = UUID.fromString("12340006-1234-5678-1234-56789abcdef0")
         val AUDIO_CONTROL_UUID = UUID.fromString("12340007-1234-5678-1234-56789abcdef0")
         val FSR_DATA_UUID = UUID.fromString("12340008-1234-5678-1234-56789abcdef0")
+        // 12340009 reserved (LED control removed — ADR-0009)
+        val ROLLCALL_CONTROL_UUID = UUID.fromString("1234000A-1234-5678-1234-56789abcdef0")
+
+        /** Target lead time (ms) the phone aims to have all devices speak the roll-call together. */
+        const val ROLLCALL_PLAY_TARGET_MS = 300
 
         // Standard BLE Battery Service UUIDs
         val BATTERY_SERVICE_UUID = UUID.fromString("0000180F-0000-1000-8000-00805f9b34fb")
@@ -95,6 +100,7 @@ class BleManager(private val context: Context) {
         const val AUDIO_NEXT_SET_MEDIUM: Byte     = 0x06
         const val AUDIO_NEXT_SET_HIGH: Byte       = 0x07
 
+        // Session summary (RETIRED — ADR-0016, replaced by the Crew Roll-Call; IDs reserved, do not reuse)
         // Session summary: Poor sync
         const val AUDIO_SUMMARY_POOR_LIGHT: Byte      = 0x08
         const val AUDIO_SUMMARY_POOR_MODERATE: Byte   = 0x09
@@ -1335,6 +1341,54 @@ class BleManager(private val context: Context) {
         return broadcast("broadcastAudio", includePacer) { deviceId ->
             sendAudioCommand(deviceId, audioEvent, volume)
         }
+    }
+
+    /**
+     * Loads the Crew Roll-Call roster onto every device (Roll-Call Control LOAD — BLE_PROTOCOL §1.10).
+     * Pair with [broadcastRollCallPlay] once loaded; the per-device write queue keeps LOAD before PLAY.
+     */
+    fun broadcastRollCallLoad(rollCall: com.orotrain.oro.model.CrewRollCall): BroadcastResult {
+        val payload = RollCallCodec.encodeLoad(rollCall)
+        Log.d(TAG, "broadcastRollCallLoad: ${rollCall.seats.size} seats, ${payload.size} bytes")
+        return broadcast("rollCallLoad", includePacer = true) { deviceId ->
+            sendRollCallWrite(deviceId, payload, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT, "rollcall-load")
+        }
+    }
+
+    /**
+     * Triggers every device to speak the loaded roster in unison (Roll-Call Control PLAY). Each device
+     * gets a *decreasing* start delay so devices reached earlier wait longer and all begin together;
+     * sent Write Without Response to minimize per-write latency (BLE_PROTOCOL §1.10, ADR-0016).
+     */
+    fun broadcastRollCallPlay(volume: Int = 100, targetDelayMs: Int = ROLLCALL_PLAY_TARGET_MS): BroadcastResult {
+        val t0 = System.currentTimeMillis()
+        Log.d(TAG, "broadcastRollCallPlay: volume=$volume, target=${targetDelayMs}ms")
+        return broadcast("rollCallPlay", includePacer = true) { deviceId ->
+            val elapsed = (System.currentTimeMillis() - t0).toInt()
+            val payload = RollCallCodec.encodePlay(startDelayMs = targetDelayMs - elapsed, volume = volume)
+            sendRollCallWrite(deviceId, payload, BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE, "rollcall-play")
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun sendRollCallWrite(deviceId: String, payload: ByteArray, writeType: Int, label: String): Boolean {
+        if (!hasRequiredPermissions()) {
+            Log.w(TAG, "$label failed for $deviceId: Missing Bluetooth permissions")
+            return false
+        }
+        val gatt = deviceGattMap[deviceId] ?: run {
+            Log.w(TAG, "$label failed for $deviceId: GATT connection not found")
+            return false
+        }
+        val hapticService = gatt.getService(ORO_HAPTIC_SERVICE_UUID) ?: run {
+            Log.w(TAG, "$label failed for $deviceId: Oro Haptic Service not found")
+            return false
+        }
+        val rollCallChar = hapticService.getCharacteristic(ROLLCALL_CONTROL_UUID) ?: run {
+            Log.w(TAG, "$label failed for $deviceId: Roll-Call Control characteristic not found (firmware may need update)")
+            return false
+        }
+        return enqueueCharacteristicWrite(gatt, rollCallChar, payload, writeType, label)
     }
 
     @SuppressLint("MissingPermission")

@@ -293,26 +293,15 @@ Byte 1: Volume (uint8, 0–100)
 | Value | Name | Type | Description |
 |-------|------|------|-------------|
 | 0x01 | AUDIO_POWER_ON | Voice | "Oro" — played on boot |
-| 0x02 | AUDIO_SESSION_START_BEEP | Tone | 3 short beeps + 1 long go-beep |
+| 0x02 | AUDIO_SESSION_START_BEEP | Tone + Haptic | 3 short beeps + 1 long go-beep, plus a synchronized buzz on the go-beep so the crew's first Catch is together (the Countdown — ADR-0016) |
 | 0x03 | AUDIO_SET_CHANGEOVER_BEEP | Tone | Single beep: set complete |
 | 0x04 | AUDIO_LAST_SET | Voice | "last set" |
 | 0x05 | AUDIO_NEXT_SET_LOW | Voice | "next set low" |
 | 0x06 | AUDIO_NEXT_SET_MEDIUM | Voice | "next set medium" |
 | 0x07 | AUDIO_NEXT_SET_HIGH | Voice | "next set high" |
-| 0x08 | AUDIO_SUMMARY_POOR_LIGHT | Voice | Session summary: Poor sync, Light power |
-| 0x09 | AUDIO_SUMMARY_POOR_MODERATE | Voice | Session summary: Poor sync, Moderate power |
-| 0x0A | AUDIO_SUMMARY_POOR_STRONG | Voice | Session summary: Poor sync, Strong power |
-| 0x0B | AUDIO_SUMMARY_POOR_MAXIMUM | Voice | Session summary: Poor sync, Maximum power |
-| 0x0C | AUDIO_SUMMARY_GOOD_LIGHT | Voice | Session summary: Good sync, Light power |
-| 0x0D | AUDIO_SUMMARY_GOOD_MODERATE | Voice | Session summary: Good sync, Moderate power |
-| 0x0E | AUDIO_SUMMARY_GOOD_STRONG | Voice | Session summary: Good sync, Strong power |
-| 0x0F | AUDIO_SUMMARY_GOOD_MAXIMUM | Voice | Session summary: Good sync, Maximum power |
-| 0x10 | AUDIO_SUMMARY_EXCELLENT_LIGHT | Voice | Session summary: Excellent sync, Light power |
-| 0x11 | AUDIO_SUMMARY_EXCELLENT_MODERATE | Voice | Session summary: Excellent sync, Moderate power |
-| 0x12 | AUDIO_SUMMARY_EXCELLENT_STRONG | Voice | Session summary: Excellent sync, Strong power |
-| 0x13 | AUDIO_SUMMARY_EXCELLENT_MAXIMUM | Voice | Session summary: Excellent sync, Maximum power |
+| 0x08–0x13 | AUDIO_SUMMARY_* | — | **RETIRED** (ADR-0016). The 12-prompt crew summary is replaced by the per-seat Crew Roll-Call (§1.10). These IDs remain reserved; do not reuse. |
 
-The 12 summary prompts (0x08–0x13) correspond to Sync Rating (Poor/Good/Excellent) × Power Range (Light/Moderate/Strong/Maximum). The Training Controller selects and sends the appropriate event at session end.
+The end-of-session summary is no longer a single crew-wide clip. It is delivered by the **Roll-Call Control** characteristic (§1.10): the phone loads every device with the full per-seat roster, then triggers all devices to speak it in unison (ADR-0016).
 
 ---
 
@@ -321,7 +310,7 @@ The 12 summary prompts (0x08–0x13) correspond to Sync Rating (Poor/Good/Excell
 **Properties:** `BLENotify`
 **Size:** 4 bytes
 
-Streams Top Hand Pressure readings at 20 Hz. The Training Controller uses this data to compute Peak Pressure per stroke (the maximum value during the Drive phase) and derive Power Range for the Session Summary.
+Streams Top Hand Pressure readings at 20 Hz. The Training Controller uses this data to compute Peak Pressure per stroke (the maximum value during the Drive phase) and derive Power Range. Every device streams its own FSR during a Session, so the phone derives each Seat's own Power Range for the Crew Roll-Call (ADR-0016), not just the Pacer's.
 
 **Data Format:**
 ```
@@ -337,6 +326,69 @@ Note: The field name in firmware is `forcePercent` / `thresholdTriggered`. The c
 ##### 1.9 LED Control — REMOVED
 
 The LED is driven entirely by firmware from `DeviceState` (see ADR-0009). No BLE characteristic exists at `…0009`; the slot is reserved and must not be reused.
+
+---
+
+##### 1.10 Roll-Call Control (Write Only)
+**UUID:** `1234000A-1234-5678-1234-56789abcdef0`
+**Properties:** `BLEWrite`
+
+Delivers the end-of-session **Crew Roll-Call** (ADR-0016): the crew Sync Rating, then every occupied Seat's own Sync Rating and Power Range. The phone first **loads** the full roster onto every device, then **plays** it on all devices in unison; each device composes and speaks the whole read-out locally from its stored clips. Load and play are separate so the larger roster transfer never delays the synchronized start.
+
+**Commands (Byte 0):**
+| Value | Name | Description |
+|-------|------|-------------|
+| 0x00 | CMD_ROLLCALL_CLEAR | Discard any stored roster (optional) |
+| 0x01 | CMD_ROLLCALL_LOAD | Store the roster for later playback |
+| 0x02 | CMD_ROLLCALL_PLAY | Speak the stored roster after a short delay |
+
+**`CMD_ROLLCALL_LOAD` payload (phone → each device):**
+```
+Byte 0:    0x01
+Byte 1:    Crew Sync Rating (uint8) — see Rating codes
+Byte 2:    Seat count N (uint8, 1–12)
+Bytes 3…:  N seat entries, 3 bytes each, in read-out order (Canoe + Seat ascending, Pacer first):
+  Entry Byte 0: Canoe (uint8) — 0 = single-canoe session (say no "Canoe N"); else 1–2
+  Entry Byte 1: Seat  (uint8) — Seat number 1–6; bit 7 set = this Seat is the Pacer
+  Entry Byte 2: Score (uint8) — low nibble = Sync Rating, high nibble = Power Range
+```
+Total length = `3 + 3N` bytes (≤ 39 for a full 12-seat crew). The roster must fit in one write, so the Training Controller requests an ATT MTU of 247 on connect. If a roster ever exceeds the negotiated MTU, `LOAD` may be split across successive writes that the device appends until it has received `Seat count` entries.
+
+**Rating codes** (used for both Crew Sync Rating in Byte 1 and each Seat's Sync Rating):
+| Value | Meaning |
+|-------|---------|
+| 0 | Not Measured |
+| 1 | Poor |
+| 2 | Good |
+| 3 | Excellent |
+
+**Power Range codes** (high nibble of the Score byte):
+| Value | Meaning |
+|-------|---------|
+| 0 | None / not available |
+| 1 | Light |
+| 2 | Moderate |
+| 3 | Strong |
+| 4 | Maximum |
+
+A **Pacer** entry (Seat bit 7 set) always carries Sync Rating = 0 and is spoken as *"Seat N, pacer, power <range>"* — no sync word. A **Follower** with Sync Rating = 0 is spoken as *"Seat N, sync not measured, power <range>"* (ADR-0015). The opener uses Byte 1: *"Team sync <rating>"*.
+
+**`CMD_ROLLCALL_PLAY` payload (phone → each device):**
+```
+Byte 0: 0x02
+Byte 1: Start delay (uint8) — units of 10 ms; the device waits this long after receiving PLAY, then speaks
+Byte 2: Volume (uint8, 0–100)
+```
+
+**Keeping playback in unison.** GATT writes are serialized, so the phone cannot reach all devices at the same instant — and overlapping, drifting voices would garble. To compensate, the Training Controller records a reference time `t0` just before the first `PLAY` write and gives each device a *decreasing* Start delay:
+
+```
+delay_ms = TARGET_MS − (now − t0)        // clamp ≥ 0, then divide by 10 for the byte
+```
+
+with `TARGET_MS` set above the worst-case send spread (e.g. 300 ms). A device written earlier waits longer, so every device's `receipt + delay` lands at ≈ the same wall-clock moment. `PLAY` is sent as **Write Without Response** to minimize per-write latency. No device-clock synchronization is needed — each device only times a relative delay from its own receipt.
+
+**Firmware clip inventory.** Composing the spoken roster needs these clips stored on each device (factory-loaded, like the existing prompts): seat numbers *"Seat 1"…"Seat 6"*; canoe numbers *"Canoe 1","Canoe 2"*; the words *"pacer","sync","power","team sync","not measured"*; Sync Ratings *"poor","good","excellent"*; Power Ranges *"light","moderate","strong","maximum"*. The retired summary prompts (Audio Control 0x08–0x13) may be removed to reclaim space.
 
 ---
 
@@ -388,6 +440,7 @@ object BleConstants {
     val AUDIO_CONTROL_UUID         = UUID.fromString("12340007-1234-5678-1234-56789abcdef0")
     val FSR_DATA_UUID              = UUID.fromString("12340008-1234-5678-1234-56789abcdef0")
     // Note: 12340009 is reserved (LED control was removed — LED is firmware-driven; see ADR-0009)
+    val ROLLCALL_CONTROL_UUID      = UUID.fromString("1234000A-1234-5678-1234-56789abcdef0")
 
     // Battery Service
     val BATTERY_SERVICE_UUID       = UUID.fromString("0000180F-0000-1000-8000-00805F9B34FB")
@@ -670,7 +723,9 @@ Oro Haptic Service:        12340000-1234-5678-1234-56789abcdef0
 ├─ Stroke Event:           12340005-1234-5678-1234-56789abcdef0
 ├─ Calibration:            12340006-1234-5678-1234-56789abcdef0
 ├─ Audio Control:          12340007-1234-5678-1234-56789abcdef0
-└─ FSR Data:               12340008-1234-5678-1234-56789abcdef0
+├─ FSR Data:               12340008-1234-5678-1234-56789abcdef0
+│  (12340009 reserved — LED control removed, ADR-0009)
+└─ Roll-Call Control:      1234000A-1234-5678-1234-56789abcdef0
 
 Battery Service:           0000180F-0000-1000-8000-00805F9B34FB
 └─ Battery Level:          00002A19-0000-1000-8000-00805F9B34FB
@@ -678,6 +733,6 @@ Battery Service:           0000180F-0000-1000-8000-00805F9B34FB
 
 ---
 
-**Document Version:** 1.1
-**Last Updated:** 2026-05-18
-**Firmware Compatibility:** OroHapticFirmware v1.0+
+**Document Version:** 1.2
+**Last Updated:** 2026-06-01
+**Firmware Compatibility:** OroHapticFirmware v1.0+ (Roll-Call Control §1.10 requires updated firmware — ADR-0016)

@@ -115,6 +115,7 @@ data class TrainingSessionState(
     val recentStrokeTimestamps: List<Long> = emptyList(), // For SPM calculation
     val currentSpm: Int = 0,
     val syncQuality: Map<String, Int> = emptyMap(), // deviceId -> latency in ms
+    val crewRollCall: CrewRollCall? = null, // per-seat end-of-session scores (ADR-0016); null until session end
     val errorMessage: String? = null
 ) {
     val elapsedTimeMillis: Long
