@@ -23,6 +23,11 @@ local.properties
 # Firmware
 *.hex
 *.bin
+# Downloaded ffmpeg toolchain (~270 MB) used to convert voice prompts — not project source
+firmware/ffmpeg-8.0.1/
+firmware/ffmpeg.exe
+firmware/ffprobe.exe
+firmware/boot_log.txt
 
 # Editor directories and files
 .vscode/*
@@ -33,3 +38,10 @@ local.properties
 *.njsproj
 *.sln
 *.sw?
+
+# Local agent/tooling state — not part of the product
+.claude/
+.agents/
+docs/superpowers/
+skills-lock.json
+nul
