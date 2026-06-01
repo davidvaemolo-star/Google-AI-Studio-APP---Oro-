@@ -123,7 +123,7 @@ uint32_t fillCb(int16_t* dst, uint32_t maxSamples, void* userdata) {
 }
 } // anon
 
-bool ExternalAudio::playSummary(uint8_t audioEventId, uint8_t volume, AudioI2S& player) {
+bool ExternalAudio::playClip(uint8_t audioEventId, uint8_t volume, AudioI2S& player) {
   if (!_ready) {
     Serial.println("[extAudio] not ready");
     return false;

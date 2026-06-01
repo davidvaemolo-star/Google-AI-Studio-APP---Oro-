@@ -6,15 +6,15 @@
  *
  * Usage:
  *   externalAudio.begin();                         // call once in setup()
- *   externalAudio.playSummary(audioEventId, vol, audioPlayer);  // returns false on failure
- *                                                              // caller falls back to chime
+ *   externalAudio.playClip(audioEventId, vol, audioPlayer);  // returns false on failure
+ *                                                            // caller falls back to a tone/chime
  */
 #ifndef EXTERNAL_AUDIO_H
 #define EXTERNAL_AUDIO_H
 
 #include <Arduino.h>
 
-#define EXT_AUDIO_MAX_PROMPTS 16
+#define EXT_AUDIO_MAX_PROMPTS 24  // holds the 20 Crew Roll-Call clips (ADR-0016) with headroom
 
 class AudioI2S;  // forward decl
 
@@ -35,9 +35,9 @@ public:
   // True if begin() succeeded and at least one entry is loaded.
   bool ready() const { return _ready; }
 
-  // Play the prompt matching `audioEventId` through `player`.
+  // Play the clip matching `audioEventId` through `player`.
   // Returns false if begin() not ready, eventId not found, or any read fails.
-  bool playSummary(uint8_t audioEventId, uint8_t volume, AudioI2S& player);
+  bool playClip(uint8_t audioEventId, uint8_t volume, AudioI2S& player);
 
 private:
   bool _ready = false;

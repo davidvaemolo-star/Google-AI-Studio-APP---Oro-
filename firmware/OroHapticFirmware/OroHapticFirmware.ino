@@ -107,6 +107,8 @@ AudioI2S audioPlayer;
 #define CALIBRATION_CHAR_UUID       "12340006-1234-5678-1234-56789abcdef0"  // Write/Notify - calibration control
 #define AUDIO_CONTROL_CHAR_UUID     "12340007-1234-5678-1234-56789abcdef0"  // Write - trigger audio prompts
 #define FSR_DATA_CHAR_UUID          "12340008-1234-5678-1234-56789abcdef0"  // Notify - FSR force data
+// 12340009 reserved (LED control removed - ADR-0009)
+#define ROLLCALL_CONTROL_CHAR_UUID  "1234000A-1234-5678-1234-56789abcdef0"  // Write - end-of-session Crew Roll-Call (ADR-0016)
 
 // Standard Battery Service
 #define BATTERY_SERVICE_UUID        "180F"
@@ -153,6 +155,68 @@ BLECharacteristic audioControlChar = BLECharacteristic(AUDIO_CONTROL_CHAR_UUID);
 // FSR Data: Notify only
 // Format: [force_percent(1 byte)][raw_adc(2 bytes LE)][threshold_triggered(1 byte)]
 BLECharacteristic fsrDataChar = BLECharacteristic(FSR_DATA_CHAR_UUID);
+
+// Roll-Call Control: Write (+ Write Without Response for the PLAY trigger)
+// LOAD: [0x01][crewRating][seatCount][canoe,seat|pacerBit,score] x N   (BLE_PROTOCOL §1.10)
+// PLAY: [0x02][startDelay x10ms][volume]
+BLECharacteristic rollCallControlChar = BLECharacteristic(ROLLCALL_CONTROL_CHAR_UUID);
+
+// ============================================================================
+// CREW ROLL-CALL (ADR-0016)
+// The phone LOADs the whole per-seat roster, then PLAYs it; every device speaks the same list,
+// triggered together (PLAY carries a short delay) so the crew hears one aligned read-out.
+// ============================================================================
+
+#define CMD_ROLLCALL_CLEAR 0x00
+#define CMD_ROLLCALL_LOAD  0x01
+#define CMD_ROLLCALL_PLAY  0x02
+
+#define ROLLCALL_MAX_SEATS 12
+#define ROLLCALL_PACER_BIT 0x80
+
+struct RollCallSeat {
+  uint8_t canoe;  // 0 = single-canoe session (no "Canoe N" spoken)
+  uint8_t seat;   // low 7 bits = seat number; bit 7 (ROLLCALL_PACER_BIT) = this seat is the Pacer
+  uint8_t score;  // low nibble = Sync Rating (0=NotMeasured..3=Excellent); high nibble = Power Range (1..4)
+};
+
+struct RollCallRoster {
+  bool loaded;
+  uint8_t crewRating;  // 0=NotMeasured, 1=Poor, 2=Good, 3=Excellent
+  uint8_t seatCount;
+  RollCallSeat seats[ROLLCALL_MAX_SEATS];
+};
+
+RollCallRoster rollCallRoster = { false, 0, 0, {} };
+bool rollCallPlayScheduled = false;
+uint32_t rollCallPlayAtMs = 0;
+uint8_t rollCallPlayVolume = 100;
+
+// Voice-clip slots for the spoken roster. Each clip streams from external QSPI flash (see below);
+// this enum just fixes the order and count. (ADR-0016)
+enum RollCallClip {
+  CLIP_TEAM_SYNC, CLIP_SYNC, CLIP_POWER, CLIP_PACER, CLIP_NOT_MEASURED,
+  CLIP_RATING_POOR, CLIP_RATING_GOOD, CLIP_RATING_EXCELLENT,
+  CLIP_POWER_LIGHT, CLIP_POWER_MODERATE, CLIP_POWER_STRONG, CLIP_POWER_MAXIMUM,
+  CLIP_SEAT_1, CLIP_SEAT_2, CLIP_SEAT_3, CLIP_SEAT_4, CLIP_SEAT_5, CLIP_SEAT_6,
+  CLIP_CANOE_1, CLIP_CANOE_2,
+  ROLLCALL_CLIP_COUNT
+};
+
+// Each clip streams from external QSPI flash at id (ROLLCALL_CLIP_EXT_BASE + enum index). The blob
+// is built by firmware/build_audio_blob.py and flashed per VOICE_PROMPTS_SETUP.md. If the blob isn't
+// present (or a clip is missing), the matching placeholder TONE below plays instead, so the roll-call
+// still works as beeps and the firmware runs without the recordings. (ADR-0016)
+#define ROLLCALL_CLIP_EXT_BASE 0x30
+
+// Fallback tone (Hz) per clip, in RollCallClip enum order. Used only when the flash clip is absent.
+const uint16_t ROLLCALL_FALLBACK_HZ[ROLLCALL_CLIP_COUNT] = {
+  600,  700,  800,  900,  400,         // team_sync, sync, power, pacer, not_measured
+  300,  520,  1000,                    // poor, good, excellent
+  350,  450,  550,  660,               // light, moderate, strong, maximum
+  1000, 1100, 1200, 1300, 1400, 1500,  // seat 1-6
+  200,  250                            // canoe 1-2
+};
 
 // ============================================================================
 // DEVICE STATE MANAGEMENT
@@ -406,9 +470,9 @@ void setup() {
     Serial.println("WARNING: Failed to initialize I2S audio - continuing without audio");
   }
   if (externalAudio.begin()) {
-    Serial.println("External audio ready (session summary prompts on QSPI).");
+    Serial.println("External audio ready (Crew Roll-Call clips on QSPI).");
   } else {
-    Serial.println("External audio NOT ready -- summary will use chime fallback.");
+    Serial.println("External audio NOT ready -- roll-call will use tone fallback.");
   }
 
   // Initialize BLE
@@ -592,6 +656,13 @@ bool initializeBLE() {
   audioControlChar.setWriteCallback(onAudioControlWrite);
   audioControlChar.begin();
 
+  // Roll-Call Control Characteristic (Write + Write Without Response) — variable-length roster
+  rollCallControlChar.setProperties(CHR_PROPS_WRITE | CHR_PROPS_WRITE_WO_RESP);
+  rollCallControlChar.setPermission(SECMODE_OPEN, SECMODE_OPEN);
+  rollCallControlChar.setMaxLen(3 + ROLLCALL_MAX_SEATS * 3);  // header + N×3 seat entries
+  rollCallControlChar.setWriteCallback(onRollCallControlWrite);
+  rollCallControlChar.begin();
+
   // FSR Data Characteristic (Notify)
   fsrDataChar.setProperties(CHR_PROPS_NOTIFY);
   fsrDataChar.setPermission(SECMODE_OPEN, SECMODE_NO_ACCESS);
@@ -640,6 +711,13 @@ bool initializeBLE() {
 
 void loop() {
   // Bluefruit handles BLE automatically, no need to poll
+
+  // Crew Roll-Call: once the scheduled (synchronized) play time arrives, speak the loaded roster.
+  // Signed compare handles millis() wraparound. (ADR-0016)
+  if (rollCallPlayScheduled && (int32_t)(millis() - rollCallPlayAtMs) >= 0) {
+    rollCallPlayScheduled = false;
+    speakRollCall(rollCallPlayVolume);
+  }
 
   // Check for serial commands
   if (Serial.available()) {
@@ -1190,6 +1268,9 @@ void playSessionStartBeeps() {
     delay(120);  // 120ms total gap between beeps
   }
   delay(200);    // Longer pause before go signal
+  // Buzz on "go" so the crew feels the start together — the Countdown (ADR-0016). Fired just before
+  // the go-tone so the haptic and tone coincide.
+  playHapticEffect(PATTERN_STRONG_CLICK, 100);
   audioPlayer.playTone(1320, 500, 100);
 }
 
@@ -1249,7 +1330,7 @@ void playAudioEvent(uint8_t audioEvent, uint8_t volume) {
   if (isSummaryEvent(audioEvent)) {
     Serial.print("Playing: session summary voice 0x");
     Serial.println(audioEvent, HEX);
-    if (externalAudio.playSummary(audioEvent, volume, audioPlayer)) {
+    if (externalAudio.playClip(audioEvent, volume, audioPlayer)) {
       Serial.println("Summary voice OK");
     } else {
       Serial.println("Summary voice failed -- chime fallback");
@@ -1271,6 +1352,133 @@ void playAudioEvent(uint8_t audioEvent, uint8_t volume) {
   }
 
   Serial.println("Unknown audio event ID");
+}
+
+// ============================================================================
+// CREW ROLL-CALL PLAYBACK (ADR-0016)
+// ============================================================================
+
+// Plays one roster clip: streamed from external QSPI flash if present, else a placeholder tone.
+void playRollCallClip(uint8_t clipId, uint8_t volume) {
+  if (clipId >= ROLLCALL_CLIP_COUNT) return;
+  uint8_t extId = ROLLCALL_CLIP_EXT_BASE + clipId;
+  if (!externalAudio.playClip(extId, volume, audioPlayer)) {
+    audioPlayer.playTone(ROLLCALL_FALLBACK_HZ[clipId], 180, volume);  // blob not flashed → beep
+  }
+  delay(40);  // small gap between words
+}
+
+// Sync Rating code (0=NotMeasured..3=Excellent) → clip.
+void playRatingClip(uint8_t ratingCode, uint8_t volume) {
+  uint8_t clip;
+  switch (ratingCode) {
+    case 1:  clip = CLIP_RATING_POOR; break;
+    case 2:  clip = CLIP_RATING_GOOD; break;
+    case 3:  clip = CLIP_RATING_EXCELLENT; break;
+    default: clip = CLIP_NOT_MEASURED; break;  // 0
+  }
+  playRollCallClip(clip, volume);
+}
+
+// Power Range code (1=Light..4=Maximum) → clip; 0/unset falls back to Light.
+void playPowerClip(uint8_t powerCode, uint8_t volume) {
+  uint8_t clip;
+  switch (powerCode) {
+    case 2:  clip = CLIP_POWER_MODERATE; break;
+    case 3:  clip = CLIP_POWER_STRONG; break;
+    case 4:  clip = CLIP_POWER_MAXIMUM; break;
+    default: clip = CLIP_POWER_LIGHT; break;  // 1 or unset
+  }
+  playRollCallClip(clip, volume);
+}
+
+void playSeatClip(uint8_t seatNumber, uint8_t volume) {
+  if (seatNumber >= 1 && seatNumber <= 6) {
+    playRollCallClip((uint8_t)(CLIP_SEAT_1 + (seatNumber - 1)), volume);
+  }
+}
+
+void playCanoeClip(uint8_t canoe, uint8_t volume) {
+  if (canoe == 1)      playRollCallClip(CLIP_CANOE_1, volume);
+  else if (canoe == 2) playRollCallClip(CLIP_CANOE_2, volume);
+}
+
+// Speaks the whole loaded roster: "team sync <rating>", then each seat in order.
+void speakRollCall(uint8_t volume) {
+  if (!rollCallRoster.loaded) return;
+  Serial.print("Speaking Roll-Call: "); Serial.print(rollCallRoster.seatCount); Serial.println(" seats");
+
+  // Opener: "team sync <rating>"
+  playRollCallClip(CLIP_TEAM_SYNC, volume);
+  playRatingClip(rollCallRoster.crewRating, volume);
+
+  for (uint8_t i = 0; i < rollCallRoster.seatCount; i++) {
+    const RollCallSeat& s = rollCallRoster.seats[i];
+    bool isPacer = (s.seat & ROLLCALL_PACER_BIT) != 0;
+    uint8_t seatNumber = s.seat & 0x7F;
+    uint8_t syncCode = s.score & 0x0F;
+    uint8_t powerCode = (s.score >> 4) & 0x0F;
+
+    if (s.canoe > 0) playCanoeClip(s.canoe, volume);
+    playSeatClip(seatNumber, volume);
+
+    if (isPacer) {
+      // "Seat N, pacer, power <range>" — no sync word (it is the reference)
+      playRollCallClip(CLIP_PACER, volume);
+    } else {
+      // "Seat N, sync <rating>, power <range>"
+      playRollCallClip(CLIP_SYNC, volume);
+      playRatingClip(syncCode, volume);
+    }
+    playRollCallClip(CLIP_POWER, volume);
+    playPowerClip(powerCode, volume);
+
+    delay(150);  // pause between seats
+  }
+  Serial.println("Roll-Call complete");
+}
+
+void onRollCallControlWrite(uint16_t conn_hdl, BLECharacteristic* chr, uint8_t* data, uint16_t len) {
+  if (len < 1) return;
+  uint8_t cmd = data[0];
+
+  switch (cmd) {
+    case CMD_ROLLCALL_LOAD: {
+      if (len < 3) { Serial.println("Roll-Call LOAD too short"); return; }
+      rollCallRoster.crewRating = data[1];
+      uint8_t requested = data[2];
+      uint8_t available = (uint8_t)((len - 3) / 3);
+      uint8_t n = requested;
+      if (n > available) n = available;
+      if (n > ROLLCALL_MAX_SEATS) n = ROLLCALL_MAX_SEATS;
+      for (uint8_t i = 0; i < n; i++) {
+        uint16_t o = 3 + i * 3;
+        rollCallRoster.seats[i].canoe = data[o];
+        rollCallRoster.seats[i].seat  = data[o + 1];
+        rollCallRoster.seats[i].score = data[o + 2];
+      }
+      rollCallRoster.seatCount = n;
+      rollCallRoster.loaded = true;
+      Serial.print("Roll-Call LOAD: "); Serial.print(n); Serial.println(" seats stored");
+      break;
+    }
+    case CMD_ROLLCALL_PLAY: {
+      uint8_t delayUnits = (len > 1) ? data[1] : 0;
+      rollCallPlayVolume = (len > 2) ? data[2] : 100;
+      rollCallPlayAtMs = millis() + (uint32_t)delayUnits * 10;
+      rollCallPlayScheduled = rollCallRoster.loaded;
+      Serial.print("Roll-Call PLAY in "); Serial.print((uint16_t)delayUnits * 10); Serial.println(" ms");
+      break;
+    }
+    case CMD_ROLLCALL_CLEAR:
+      rollCallRoster.loaded = false;
+      rollCallPlayScheduled = false;
+      Serial.println("Roll-Call cleared");
+      break;
+    default:
+      Serial.print("Unknown roll-call command: 0x"); Serial.println(cmd, HEX);
+      break;
+  }
 }
 
 // ============================================================================

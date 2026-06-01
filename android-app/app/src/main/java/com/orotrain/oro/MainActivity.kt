@@ -27,7 +27,6 @@ import com.orotrain.oro.ui.theme.OroTheme
 class MainActivity : ComponentActivity() {
 
     private lateinit var bleManager: BleManager
-    private lateinit var audioManager: com.orotrain.oro.audio.AudioManager
     private lateinit var viewModel: MainViewModel
 
     // Permission launcher
@@ -56,19 +55,18 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // Initialize BLE manager and Audio manager
+        // Initialize BLE manager
         bleManager = BleManager(applicationContext)
-        audioManager = com.orotrain.oro.audio.AudioManager(applicationContext)
 
         // Initialize session database and repository
         val database = SessionDatabase.getInstance(applicationContext)
         val sessionRepository = SessionRepository(database.sessionDao())
         val programmeRepository = com.orotrain.oro.data.ProgrammeRepository(filesDir)
 
-        // Create ViewModel with BleManager, AudioManager, and SessionRepository
+        // Create ViewModel with BleManager and SessionRepository
         viewModel = ViewModelProvider(
             this,
-            MainViewModelFactory(bleManager, audioManager, sessionRepository, programmeRepository)
+            MainViewModelFactory(bleManager, sessionRepository, programmeRepository)
         )[MainViewModel::class.java]
 
         // Check and request permissions
@@ -129,20 +127,18 @@ class MainActivity : ComponentActivity() {
     override fun onDestroy() {
         super.onDestroy()
         bleManager.cleanup()
-        audioManager.cleanup()
     }
 }
 
 class MainViewModelFactory(
     private val bleManager: BleManager,
-    private val audioManager: com.orotrain.oro.audio.AudioManager,
     private val sessionRepository: SessionRepository,
     private val programmeRepository: com.orotrain.oro.data.ProgrammeRepository
 ) : ViewModelProvider.Factory {
     @Suppress("UNCHECKED_CAST")
     override fun <T : ViewModel> create(modelClass: Class<T>): T {
         if (modelClass.isAssignableFrom(MainViewModel::class.java)) {
-            return MainViewModel(bleManager, audioManager, sessionRepository, programmeRepository) as T
+            return MainViewModel(bleManager, sessionRepository, programmeRepository) as T
         }
         throw IllegalArgumentException("Unknown ViewModel class")
     }

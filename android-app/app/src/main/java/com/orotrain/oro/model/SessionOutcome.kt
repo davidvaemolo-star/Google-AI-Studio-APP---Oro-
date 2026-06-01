@@ -20,6 +20,11 @@ data class SessionOutcome(
         private const val ZERO_SYNC_GAP_MS    = 300.0
         private const val SYNC_RANGE_MS       = ZERO_SYNC_GAP_MS - PERFECT_SYNC_GAP_MS
 
+        /** Converts an absolute catch gap (ms) to a 0–100 Sync Score, or null when Not Measured. */
+        fun scoreForGap(gapMs: Double?): Int? = gapMs?.let { gap ->
+            ((ZERO_SYNC_GAP_MS - gap) / SYNC_RANGE_MS * 100.0).coerceIn(0.0, 100.0).toInt()
+        }
+
         /**
          * @param crewAverageGapMs the crew's average absolute follower↔pacer catch gap, or null
          *        when there was nothing to measure (Sync Score = Not Measured).
@@ -28,9 +33,7 @@ data class SessionOutcome(
             crewAverageGapMs: Double?,
             strokeFsrPeakPercents: Collection<Int>
         ): SessionOutcome {
-            val syncScore = crewAverageGapMs?.let { gap ->
-                ((ZERO_SYNC_GAP_MS - gap) / SYNC_RANGE_MS * 100.0).coerceIn(0.0, 100.0).toInt()
-            }
+            val syncScore = scoreForGap(crewAverageGapMs)
             val avgFsrPeak = if (strokeFsrPeakPercents.isEmpty()) 0
                              else strokeFsrPeakPercents.average().toInt()
             return SessionOutcome(

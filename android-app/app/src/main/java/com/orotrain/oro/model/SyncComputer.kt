@@ -37,7 +37,29 @@ object SyncComputer {
      * (no pacer Catches, or no follower Catches) — i.e. the Sync Score is "Not Measured".
      */
     fun crewAverageGapMs(samples: List<CatchSample>, pacerId: String?): Double? {
-        if (pacerId == null || samples.isEmpty()) return null
+        val gaps = followerCatchGaps(samples, pacerId)
+        return if (gaps.isEmpty()) null else gaps.map { it.second }.average()
+    }
+
+    /**
+     * Each Follower's own average absolute catch gap (ms), keyed by deviceId. Same clock-alignment
+     * and nearest-pacer pairing as [crewAverageGapMs], but kept per device so every Follower gets
+     * its own Sync Score for the Crew Roll-Call (ADR-0016). The Pacer is excluded. A Follower with
+     * no Catch to compare is absent from the map — its Sync Score is Not Measured (ADR-0015).
+     */
+    fun perDeviceAverageGapMs(samples: List<CatchSample>, pacerId: String?): Map<String, Double> =
+        followerCatchGaps(samples, pacerId)
+            .groupBy({ it.first }, { it.second })
+            .mapValues { (_, gaps) -> gaps.average() }
+
+    /**
+     * One (deviceId, absolute gap ms) pair per Follower Catch, after clock-aligning every device
+     * and pairing each Follower Catch to the nearest Pacer Catch. Empty when there is no Pacer, no
+     * Pacer Catch, or no Follower Catch. The single source of pairing for both the crew average and
+     * the per-device breakdown.
+     */
+    private fun followerCatchGaps(samples: List<CatchSample>, pacerId: String?): List<Pair<String, Double>> {
+        if (pacerId == null || samples.isEmpty()) return emptyList()
 
         // Per-device clock offset: the smallest (phoneReceive - deviceTimestamp) seen. The fastest
         // delivery has the least Bluetooth delay, so its offset is closest to the true one.
@@ -47,16 +69,13 @@ object SyncComputer {
         fun aligned(s: CatchSample): Long = s.deviceTimestampMs + offsets.getValue(s.deviceId)
 
         val pacerAligned = samples.filter { it.deviceId == pacerId }.map(::aligned).sorted()
-        if (pacerAligned.isEmpty()) return null
+        if (pacerAligned.isEmpty()) return emptyList()
 
-        val followerCatches = samples.filter { it.deviceId != pacerId }
-        if (followerCatches.isEmpty()) return null
-
-        val gaps = followerCatches.map { f ->
+        return samples.filter { it.deviceId != pacerId }.map { f ->
             val distance = nearestDistanceMs(pacerAligned, aligned(f))
-            if (distance > MATCH_WINDOW_MS) MAX_GAP_MS else min(distance.toDouble(), MAX_GAP_MS)
+            val gap = if (distance > MATCH_WINDOW_MS) MAX_GAP_MS else min(distance.toDouble(), MAX_GAP_MS)
+            f.deviceId to gap
         }
-        return gaps.average()
     }
 
     /** Smallest absolute distance from [t] to any value in the ascending-sorted [sorted]. */
