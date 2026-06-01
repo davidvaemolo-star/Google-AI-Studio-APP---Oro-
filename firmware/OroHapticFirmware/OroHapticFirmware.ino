@@ -81,8 +81,15 @@ AudioI2S audioPlayer;
 // IMU Stroke Detection Settings
 #define IMU_SAMPLE_RATE_HZ 104       // 104 Hz sampling rate
 #define STROKE_DETECT_THRESHOLD 1.0  // Acceleration threshold in g (based on real paddle data: peak ~1.83g, using 55%)
-#define STROKE_MIN_INTERVAL_MS 200   // Minimum time between strokes (prevents double-counting)
+// Refractory period: a stroke cannot be counted within this window of the previous one.
+// A paddle physically tops out around 80 SPM (High intensity) = 750ms/stroke, so 500ms can
+// never merge two real strokes, yet it absorbs the recovery/return-swing acceleration spike
+// (~250ms after Finish) that was otherwise being miscounted as a second stroke. The old 200ms
+// was shorter than a single stroke cycle, so the return swing slipped through as a new Catch.
+#define STROKE_MIN_INTERVAL_MS 500   // Minimum time between counted strokes (max ~120 SPM)
 #define CALIBRATION_SAMPLES 10      // Number of samples for calibration
+#define TARE_DURATION_MS 1000       // Resting-baseline sampling window at calibration start (ADR-0012)
+#define TARE_MAX_SPREAD 0.20        // Max accelY spread (g) allowed during tare; above this the paddle wasn't held still
 
 // ============================================================================
 // BLE SERVICE AND CHARACTERISTIC UUIDs
@@ -266,6 +273,7 @@ struct StrokeDetectionState {
   unsigned long driveTimestamp;   // millis() when DRIVE detected
   unsigned long finishTimestamp;  // millis() when FINISH detected
   uint8_t fsrPeakDuringStroke;   // Peak FSR force% during this stroke
+  float restBaseline;            // Device's resting accelY, subtracted from readings (tare) — ADR-0012
 };
 
 StrokeDetectionState strokeDetection = {
@@ -277,18 +285,25 @@ StrokeDetectionState strokeDetection = {
   0.0,                           // no minimum yet
   false,                         // not in stroke
   0, 0, 0,                       // phase timestamps
-  0                              // FSR peak during stroke
+  0,                             // FSR peak during stroke
+  0.0                            // resting baseline (set during calibration tare)
 };
 
 // Calibration State
 struct CalibrationState {
   bool active;
+  bool taring;                // Capturing resting baseline (still window) before counting strokes — ADR-0012
+  unsigned long tareStartMs;  // millis() when the tare window began
+  float tareSum;              // Running sum of accelY samples during tare
+  uint16_t tareSamples;       // Number of accelY samples collected during tare
+  float tareMin;              // Min accelY seen during tare (for stillness check)
+  float tareMax;              // Max accelY seen during tare (for stillness check)
   uint8_t strokeCount;  // Count actual strokes, not samples
   float maxAccelSeen;
   float minAccelSeen;
 };
 
-CalibrationState calibrationState = {false, 0, 0.0, 0.0};
+CalibrationState calibrationState = {false, false, 0, 0.0, 0, 0.0, 0.0, 0, 0.0, 0.0};
 
 // FSR State
 struct FsrState {
@@ -975,6 +990,16 @@ void loop() {
     lastBatteryRead = millis();
   }
 
+  // Device-status heartbeat: re-broadcast our current DeviceState every few seconds while
+  // connected. The firmware does not push status on BLE connect (notifications aren't subscribed
+  // yet at that point), so this lets a reconnecting phone relearn whether we're still calibrated
+  // (STATE_READY) or came back uncalibrated after a reboot (STATE_IDLE). See Android device-state sync.
+  static unsigned long lastStatusHeartbeat = 0;
+  if (Bluefruit.connected() && millis() - lastStatusHeartbeat >= 3000) {
+    lastStatusHeartbeat = millis();
+    updateDeviceStatus();
+  }
+
   // Handle FSR reading (always active when connected)
   handleFsrReading();
 
@@ -1655,9 +1680,18 @@ void handleStrokeDetection() {
   float accelY = imu.readFloatAccelY();
   float accelZ = imu.readFloatAccelZ();
 
-  // Calculate total acceleration magnitude (forward/backward axis - typically Y for rowing)
-  // Using Y-axis as primary stroke direction
-  float strokeAccel = accelY;
+  // Resting-baseline (tare) phase: device is held still, average accelY into
+  // restBaseline, then begin detecting strokes relative to it. No stroke
+  // detection happens until the baseline is set. (ADR-0012)
+  if (calibrationState.taring) {
+    updateTare(accelY);
+    return;
+  }
+
+  // Stroke signal measured as movement relative to the device's resting baseline.
+  // Subtracting restBaseline removes gravity's pull on this axis and the sensor's
+  // per-unit offset, so devices with identical firmware behave consistently. (ADR-0012)
+  float strokeAccel = accelY - strokeDetection.restBaseline;
 
   // Debug: Print raw values every 100ms (roughly every 10 samples at 104Hz)
   static unsigned long lastDebugPrint = 0;
@@ -1784,20 +1818,25 @@ void handleStrokeDetection() {
           }
         }
 
-        // Play zone-patterned haptic for the pacer device
-        uint8_t pattern = PATTERN_STRONG_CLICK;
-        switch (trainingConfig.zoneColor) {
-          case 0x01:
-            pattern = PATTERN_SOFT_CLICK;
-            break;
-          case 0x02:
-            pattern = PATTERN_STRONG_CLICK;
-            break;
-          case 0x03:
-            pattern = PATTERN_DOUBLE_CLICK;
-            break;
+        // Local per-stroke haptic is calibration feedback ONLY. During training the
+        // phone mediates all haptics (ADR-0002) and pulses every device — including the
+        // Pacer — when it receives this Finish event. Buzzing locally here too would make
+        // the Pacer fire twice per stroke while Followers fire once.
+        if (calibrationState.active) {
+          uint8_t pattern = PATTERN_STRONG_CLICK;
+          switch (trainingConfig.zoneColor) {
+            case 0x01:
+              pattern = PATTERN_SOFT_CLICK;
+              break;
+            case 0x02:
+              pattern = PATTERN_STRONG_CLICK;
+              break;
+            case 0x03:
+              pattern = PATTERN_DOUBLE_CLICK;
+              break;
+          }
+          playHapticEffect(pattern, 100);
         }
-        playHapticEffect(pattern, 100);
 
         // Send stroke event
         sendStrokeEvent(STROKE_PHASE_FINISH, currentTime, strokeAccel);
@@ -1918,18 +1957,29 @@ void onCalibrationWrite(uint16_t conn_hdl, BLECharacteristic* chr, uint8_t* data
 
 void startCalibration() {
   Serial.println("=== Starting Calibration ===");
-  Serial.println("Perform 50 strokes at various intensities...");
+  Serial.println("Hold the paddle still — measuring resting baseline...");
 
   calibrationState.active = true;
+
+  // Begin the resting-baseline (tare) window. Stroke counting does not start
+  // until this completes. The paddle must be held still for ~1s. (ADR-0012)
+  calibrationState.taring = true;
+  calibrationState.tareStartMs = millis();
+  calibrationState.tareSum = 0.0;
+  calibrationState.tareSamples = 0;
+  calibrationState.tareMin = 999.0;
+  calibrationState.tareMax = -999.0;
+
   calibrationState.strokeCount = 0;
   calibrationState.maxAccelSeen = -999.0;
   calibrationState.minAccelSeen = 999.0;
 
-  // Lower the threshold for development (hand movements) - change to 0.3g for real strokes in water
-  strokeDetection.threshold = 0.25;  // Moderate sensitivity for deliberate hand movements
+  // Sensitivity used during the 50-stroke phase. Interpreted as movement
+  // relative to restBaseline once the tare completes. (ADR-0012)
+  strokeDetection.threshold = 0.25;  // Moderate sensitivity for deliberate movements
   Serial.print("Calibration threshold set to: ");
   Serial.print(strokeDetection.threshold, 2);
-  Serial.println("g");
+  Serial.println("g (relative to resting baseline)");
 
   trainingState.deviceState = STATE_CALIBRATING;
   updateDeviceStatus();
@@ -1940,9 +1990,56 @@ void startCalibration() {
   sendCalibrationStatus();
 }
 
+// Accumulates accelY samples during the resting-baseline window. When the window
+// elapses, stores the average as restBaseline and moves on to stroke counting —
+// or, if the paddle wasn't held still, rejects the baseline so the coach can
+// retry rather than baking in a bad zero. (ADR-0012)
+void updateTare(float accelY) {
+  calibrationState.tareSum += accelY;
+  calibrationState.tareSamples++;
+  if (accelY < calibrationState.tareMin) calibrationState.tareMin = accelY;
+  if (accelY > calibrationState.tareMax) calibrationState.tareMax = accelY;
+
+  if (millis() - calibrationState.tareStartMs < TARE_DURATION_MS) {
+    return;  // still inside the sampling window
+  }
+
+  float spread = calibrationState.tareMax - calibrationState.tareMin;
+
+  if (calibrationState.tareSamples == 0 || spread > TARE_MAX_SPREAD) {
+    // Paddle was moving — refuse to store a bad zero. Coach re-taps calibrate to retry.
+    Serial.print("Tare REJECTED — readings too jumpy (spread ");
+    Serial.print(spread, 3);
+    Serial.println("g). Hold the paddle still and calibrate again.");
+
+    calibrationState.active = false;
+    calibrationState.taring = false;
+    trainingState.deviceState = STATE_ERROR;
+    updateDeviceStatus();
+
+    playHapticEffect(PATTERN_ALERT_750MS, 100);
+    sendCalibrationStatus();
+    return;
+  }
+
+  strokeDetection.restBaseline = calibrationState.tareSum / calibrationState.tareSamples;
+  calibrationState.taring = false;
+
+  Serial.print("Resting baseline set to ");
+  Serial.print(strokeDetection.restBaseline, 3);
+  Serial.print("g (spread ");
+  Serial.print(spread, 3);
+  Serial.println("g). Now perform 50 strokes at various intensities.");
+
+  // Signal the paddler that stroke counting has begun.
+  playHapticEffect(PATTERN_DOUBLE_CLICK, 80);
+  sendCalibrationStatus();
+}
+
 void stopCalibration() {
   Serial.println("Calibration stopped");
   calibrationState.active = false;
+  calibrationState.taring = false;
 
   // Restore default threshold if calibration was cancelled
   strokeDetection.threshold = STROKE_DETECT_THRESHOLD;
@@ -1950,7 +2047,10 @@ void stopCalibration() {
   Serial.print(strokeDetection.threshold, 2);
   Serial.println("g");
 
-  trainingState.deviceState = STATE_READY;
+  // A cancelled calibration leaves the device uncalibrated (default threshold), so it reports
+  // IDLE, not READY. This keeps STATE_READY meaning "calibrated", which the phone relies on to
+  // restore calibration state after a reconnect (see ADR-0003 / Android device-state sync).
+  trainingState.deviceState = STATE_IDLE;
   updateDeviceStatus();
 
   playHapticEffect(PATTERN_SOFT_CLICK, 60);
@@ -1992,7 +2092,8 @@ void sendCalibrationStatus() {
     return;
   }
 
-  // Format: [command(1) | strokeCount(1) | maxAccel(2) | minAccel(2) | reserved(2)]
+  // Format: [command(1) | strokeCount(1) | maxAccel(2) | minAccel(2) | taring(1) | baselineRejected(1)]
+  // The last two bytes were previously reserved; older app builds ignore them. (ADR-0012)
   uint8_t data[8];
   data[0] = CAL_CMD_GET_STATUS;
   data[1] = calibrationState.strokeCount;
@@ -2005,8 +2106,8 @@ void sendCalibrationStatus() {
   data[3] = (maxAccelInt >> 8) & 0xFF;  // maxAccel high byte
   data[4] = (minAccelInt >> 0) & 0xFF;  // minAccel low byte
   data[5] = (minAccelInt >> 8) & 0xFF;  // minAccel high byte
-  data[6] = 0x00;  // reserved
-  data[7] = 0x00;  // reserved
+  data[6] = calibrationState.taring ? 0x01 : 0x00;  // 1 = capturing resting baseline (hold still)
+  data[7] = (trainingState.deviceState == STATE_ERROR) ? 0x01 : 0x00;  // 1 = baseline rejected, hold still & retry
 
   Serial.print("Sending calibration notification: strokes=");
   Serial.print(calibrationState.strokeCount);

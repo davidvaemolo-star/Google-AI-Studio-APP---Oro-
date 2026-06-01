@@ -65,6 +65,9 @@ data class HapticDevice(
     val calibrationProgress: Int = 0,  // 0-50 strokes
     val calibrationMaxAccel: Float = 0f,
     val calibrationMinAccel: Float = 0f,
+    // Resting-baseline (tare) sub-states within InProgress calibration — ADR-0012.
+    val isCapturingBaseline: Boolean = false,  // device is learning its zero; hold the paddle still
+    val baselineRejected: Boolean = false,     // paddle wasn't still; coach must retry
     val topHandPressurePercent: Int = 0,
     val topHandPressureThresholdTriggered: Boolean = false
 )

@@ -34,65 +34,23 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import com.orotrain.oro.model.DeviceStatus
-import com.orotrain.oro.model.MAX_DEVICES
 import com.orotrain.oro.model.OroUiState
-
-data class ChecklistItem(
-    val label: String,
-    val isPassed: Boolean,
-    val isWarning: Boolean = false,
-    val details: String? = null
-)
+import com.orotrain.oro.model.StartCheck
 
 @Composable
 fun PreTrainingChecklist(
     state: OroUiState,
     modifier: Modifier = Modifier
 ) {
-    val connectedDevices = state.devices.filter { it.status == DeviceStatus.Connected }
-    val pacerDevice = connectedDevices.find { it.seat == 1 }
+    // Single source of truth: the same list the Start button is gated on (see OroUiState.startChecks).
+    val checklistItems = state.startChecks
+    val blockingItems = checklistItems.filter { it.isBlocking }
 
-    val checklistItems = listOf(
-        ChecklistItem(
-            label = "Devices Connected",
-            isPassed = state.connectedDevicesCount > 0,
-            details = "${state.connectedDevicesCount} of $MAX_DEVICES devices connected"
-        ),
-        ChecklistItem(
-            label = "Pacer Assigned",
-            isPassed = pacerDevice != null,
-            details = if (pacerDevice != null) "Seat 1: ${pacerDevice.name}" else "No device in Seat 1"
-        ),
-        ChecklistItem(
-            label = "Battery Levels",
-            isPassed = connectedDevices.all { it.batteryLevel != null && it.batteryLevel > 20 },
-            isWarning = connectedDevices.any { it.batteryLevel != null && it.batteryLevel in 21..30 },
-            details = when {
-                connectedDevices.isEmpty() -> "No devices to check"
-                connectedDevices.any { it.batteryLevel == null } -> "Some devices not reporting battery"
-                connectedDevices.any { it.batteryLevel!! <= 20 } -> {
-                    val lowDevices = connectedDevices.filter { it.batteryLevel!! <= 20 }
-                    "${lowDevices.size} device(s) below 20%"
-                }
-                connectedDevices.any { it.batteryLevel!! in 21..30 } -> {
-                    val warningDevices = connectedDevices.filter { it.batteryLevel!! in 21..30 }
-                    "${warningDevices.size} device(s) at ${warningDevices.minOfOrNull { it.batteryLevel!! }}%"
-                }
-                else -> "All devices above 30%"
-            }
-        ),
-        ChecklistItem(
-            label = "Training Zones",
-            isPassed = state.zones.isNotEmpty(),
-            details = if (state.zones.isEmpty()) "No zones configured" else "${state.zones.size} zone(s) ready"
-        )
-    )
-
-    val allPassed = checklistItems.all { it.isPassed }
-    val passedCount = checklistItems.count { it.isPassed }
+    // "Ready" depends only on the blocking checks; warnings (e.g. low battery) are shown but never block.
+    val allPassed = blockingItems.all { it.isPassed }
+    val passedCount = blockingItems.count { it.isPassed }
     val progress by animateFloatAsState(
-        targetValue = passedCount.toFloat() / checklistItems.size.toFloat(),
+        targetValue = if (blockingItems.isEmpty()) 0f else passedCount.toFloat() / blockingItems.size.toFloat(),
         label = "checklist_progress"
     )
 
@@ -128,7 +86,7 @@ fun PreTrainingChecklist(
                 )
 
                 Text(
-                    text = "$passedCount / ${checklistItems.size}",
+                    text = "$passedCount / ${blockingItems.size}",
                     style = MaterialTheme.typography.titleSmall,
                     fontWeight = FontWeight.Bold,
                     color = if (allPassed) {
@@ -221,7 +179,7 @@ fun PreTrainingChecklist(
 }
 
 @Composable
-private fun ChecklistItemRow(item: ChecklistItem) {
+private fun ChecklistItemRow(item: StartCheck) {
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.spacedBy(12.dp),

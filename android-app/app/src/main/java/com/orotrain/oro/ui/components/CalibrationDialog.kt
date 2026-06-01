@@ -13,9 +13,11 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.Warning
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -150,10 +152,25 @@ fun CalibrationDialog(
                         )
                     }
                     CalibrationState.InProgress -> {
-                        ActiveCalibrationView(
-                            device = displayDevice,
-                            onStopCalibration = onStopCalibration
-                        )
+                        when {
+                            displayDevice.baselineRejected -> {
+                                BaselineRejectedView(
+                                    onRetryCalibration = onStartCalibration,
+                                    onStopCalibration = onStopCalibration
+                                )
+                            }
+                            displayDevice.isCapturingBaseline -> {
+                                CapturingBaselineView(
+                                    onStopCalibration = onStopCalibration
+                                )
+                            }
+                            else -> {
+                                ActiveCalibrationView(
+                                    device = displayDevice,
+                                    onStopCalibration = onStopCalibration
+                                )
+                            }
+                        }
                     }
                     CalibrationState.Complete -> {
                         CompleteCalibrationView(
@@ -249,6 +266,100 @@ private fun IdleCalibrationView(
                 modifier = Modifier.padding(vertical = 8.dp),
                 style = MaterialTheme.typography.titleMedium
             )
+        }
+    }
+}
+
+@Composable
+private fun CapturingBaselineView(
+    onStopCalibration: () -> Unit
+) {
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        CircularProgressIndicator(color = AccentCyan)
+
+        Text(
+            text = "Hold the paddle still",
+            style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
+            color = AccentCyan,
+            modifier = Modifier.fillMaxWidth(),
+            textAlign = TextAlign.Center
+        )
+        Text(
+            text = "Keep the paddle resting in place for a moment while the device finds its zero point. Stroke counting starts on its own.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = Color.White.copy(alpha = 0.8f),
+            modifier = Modifier.fillMaxWidth(),
+            textAlign = TextAlign.Center
+        )
+
+        OutlinedButton(
+            onClick = onStopCalibration,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text(
+                text = "Cancel",
+                modifier = Modifier.padding(vertical = 8.dp)
+            )
+        }
+    }
+}
+
+@Composable
+private fun BaselineRejectedView(
+    onRetryCalibration: () -> Unit,
+    onStopCalibration: () -> Unit
+) {
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.Center,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                imageVector = Icons.Rounded.Warning,
+                contentDescription = null,
+                tint = Color(0xFFFFC24B),
+                modifier = Modifier.padding(end = 8.dp)
+            )
+            Text(
+                text = "Couldn't get a steady reading",
+                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                color = Color(0xFFFFC24B)
+            )
+        }
+        Text(
+            text = "The paddle was moving while the device tried to find its zero point. Rest it still, then tap Retry.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = Color.White.copy(alpha = 0.8f),
+            modifier = Modifier.fillMaxWidth(),
+            textAlign = TextAlign.Center
+        )
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            OutlinedButton(
+                onClick = onStopCalibration,
+                modifier = Modifier.weight(1f)
+            ) {
+                Text("Cancel")
+            }
+            Button(
+                onClick = onRetryCalibration,
+                modifier = Modifier.weight(1f),
+                colors = ButtonDefaults.buttonColors(containerColor = AccentCyan)
+            ) {
+                Text("Retry")
+            }
         }
     }
 }

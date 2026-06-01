@@ -1,6 +1,7 @@
 package com.orotrain.oro.model
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Test
 
 class SessionOutcomeTest {
@@ -44,77 +45,54 @@ class SessionOutcomeTest {
         assertEquals(PowerRange.Maximum, PowerRange.fromPeakPercent(100))
     }
 
-    // --- SessionOutcome.compute: Sync Score formula ---
+    // --- SessionOutcome.compute: Sync Score formula (absolute crew gap, ADR-0015) ---
 
-    @Test fun `perfect sync 50ms average yields score 100 and excellent`() {
-        val outcome = SessionOutcome.compute(
-            followerLatenciesMs = listOf(50, 50, 50),
-            strokeFsrPeakPercents = listOf(60)
-        )
+    @Test fun `perfect sync 50ms gap yields score 100 and excellent`() {
+        val outcome = SessionOutcome.compute(crewAverageGapMs = 50.0, strokeFsrPeakPercents = listOf(60))
         assertEquals(100, outcome.syncScore)
         assertEquals(SyncRating.Excellent, outcome.syncRating)
     }
 
-    @Test fun `zero sync 300ms average yields score 0 and poor`() {
-        val outcome = SessionOutcome.compute(
-            followerLatenciesMs = listOf(300, 300),
-            strokeFsrPeakPercents = listOf(40)
-        )
+    @Test fun `zero sync 300ms gap yields score 0 and poor`() {
+        val outcome = SessionOutcome.compute(crewAverageGapMs = 300.0, strokeFsrPeakPercents = listOf(40))
         assertEquals(0, outcome.syncScore)
         assertEquals(SyncRating.Poor, outcome.syncRating)
     }
 
-    @Test fun `mid latency 175ms yields score 50 and good`() {
-        val outcome = SessionOutcome.compute(
-            followerLatenciesMs = listOf(175),
-            strokeFsrPeakPercents = listOf(40)
-        )
+    @Test fun `mid gap 175ms yields score 50 and good`() {
+        val outcome = SessionOutcome.compute(crewAverageGapMs = 175.0, strokeFsrPeakPercents = listOf(40))
         assertEquals(50, outcome.syncScore)
         assertEquals(SyncRating.Good, outcome.syncRating)
     }
 
-    @Test fun `latency below 50ms is clamped to score 100`() {
-        val outcome = SessionOutcome.compute(
-            followerLatenciesMs = listOf(0, 10),
-            strokeFsrPeakPercents = listOf(0)
-        )
+    @Test fun `gap below 50ms is clamped to score 100`() {
+        val outcome = SessionOutcome.compute(crewAverageGapMs = 5.0, strokeFsrPeakPercents = listOf(0))
         assertEquals(100, outcome.syncScore)
     }
 
-    @Test fun `latency above 300ms is clamped to score 0`() {
-        val outcome = SessionOutcome.compute(
-            followerLatenciesMs = listOf(500, 1000),
-            strokeFsrPeakPercents = listOf(0)
-        )
+    @Test fun `gap above 300ms is clamped to score 0`() {
+        val outcome = SessionOutcome.compute(crewAverageGapMs = 750.0, strokeFsrPeakPercents = listOf(0))
         assertEquals(0, outcome.syncScore)
     }
 
-    // --- SessionOutcome.compute: empty inputs ---
+    // --- SessionOutcome.compute: Not Measured (no follower data) ---
 
-    @Test fun `no follower latencies treated as worst case`() {
-        val outcome = SessionOutcome.compute(
-            followerLatenciesMs = emptyList(),
-            strokeFsrPeakPercents = listOf(50)
-        )
-        assertEquals(0, outcome.syncScore)
-        assertEquals(SyncRating.Poor, outcome.syncRating)
+    @Test fun `null crew gap is Not Measured, not Poor`() {
+        val outcome = SessionOutcome.compute(crewAverageGapMs = null, strokeFsrPeakPercents = listOf(50))
+        assertNull(outcome.syncScore)
+        assertNull(outcome.syncRating)
+        assertEquals(false, outcome.syncMeasured)
     }
 
     @Test fun `no strokes yields light power range`() {
-        val outcome = SessionOutcome.compute(
-            followerLatenciesMs = listOf(50),
-            strokeFsrPeakPercents = emptyList()
-        )
+        val outcome = SessionOutcome.compute(crewAverageGapMs = 50.0, strokeFsrPeakPercents = emptyList())
         assertEquals(PowerRange.Light, outcome.powerRange)
     }
 
     // --- SessionOutcome.compute: power range derived from average ---
 
     @Test fun `power range uses average peak across all strokes`() {
-        val outcome = SessionOutcome.compute(
-            followerLatenciesMs = listOf(100),
-            strokeFsrPeakPercents = listOf(60, 80, 100)  // avg 80
-        )
+        val outcome = SessionOutcome.compute(crewAverageGapMs = 100.0, strokeFsrPeakPercents = listOf(60, 80, 100))  // avg 80
         assertEquals(PowerRange.Maximum, outcome.powerRange)
     }
 }

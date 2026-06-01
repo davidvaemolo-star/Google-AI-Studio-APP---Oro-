@@ -181,7 +181,9 @@ class BleManager(private val context: Context) {
         val maxAccel: Float,
         val minAccel: Float,
         val suggestedThreshold: Float,
-        val isComplete: Boolean
+        val isComplete: Boolean,
+        val isCapturingBaseline: Boolean = false,  // firmware is in the resting-baseline (tare) window; hold still (ADR-0012)
+        val baselineRejected: Boolean = false       // baseline rejected because the paddle wasn't still; retry (ADR-0012)
     )
 
     private val _strokeEvents = MutableStateFlow<StrokeEvent?>(null)
@@ -193,6 +195,13 @@ class BleManager(private val context: Context) {
     data class FsrUpdate(val deviceId: String, val forcePercent: Int, val rawAdc: Int, val topHandPressureThresholdTriggered: Boolean)
     private val _fsrUpdates = MutableStateFlow<FsrUpdate?>(null)
     val fsrUpdates: StateFlow<FsrUpdate?> = _fsrUpdates.asStateFlow()
+
+    // Raw firmware DeviceState byte (STATE_IDLE/READY/CALIBRATING/...) reported via the Device
+    // Status characteristic. The ViewModel uses this to resync calibration state after a reconnect,
+    // so a Bluetooth blip no longer wipes a completed calibration. See ADR-0003 / device-state sync.
+    data class DeviceStateUpdate(val deviceId: String, val firmwareState: Int)
+    private val _deviceStateUpdates = MutableStateFlow<DeviceStateUpdate?>(null)
+    val deviceStateUpdates: StateFlow<DeviceStateUpdate?> = _deviceStateUpdates.asStateFlow()
 
     private val deviceGattMap = ConcurrentHashMap<String, BluetoothGatt>()
     private val deviceStatusMap = ConcurrentHashMap<String, DeviceStatus>()
@@ -859,6 +868,9 @@ class BleManager(private val context: Context) {
                         DeviceStatus.Connected,
                         batteryLevel = frame.batteryLevel
                     )
+                    // Surface the firmware's own state so the ViewModel can resync calibration
+                    // across reconnects (ADR-0003 / device-state sync).
+                    _deviceStateUpdates.value = DeviceStateUpdate(deviceId, frame.state.toInt() and 0xFF)
                 } else {
                     Log.w(TAG, "Malformed device status payload from ${gatt.device.address}: ${value.size} bytes")
                 }
@@ -892,7 +904,7 @@ class BleManager(private val context: Context) {
                 Log.d(TAG, "Calibration notification received from ${gatt.device.address}, size=${value.size}")
 
                 // Parse calibration status frame
-                // Format: [command(1) | strokeCount(1) | maxAccel(2) | minAccel(2) | reserved(2)]
+                // Format: [command(1) | strokeCount(1) | maxAccel(2) | minAccel(2) | taring(1) | baselineRejected(1)]
                 if (value.size >= 4) {
                     val command = value[0]
                     val strokeCount = value[1].toInt() and 0xFF
@@ -908,6 +920,9 @@ class BleManager(private val context: Context) {
                         val minAccel = minAccelInt.toShort() / 100.0f
                         val suggestedThreshold = maxAccel * 0.55f  // 55% of max
                         val isComplete = strokeCount >= 50
+                        // Bytes 6–7 added in ADR-0012; older firmware sent 0 here.
+                        val isCapturingBaseline = value[6].toInt() != 0
+                        val baselineRejected = value[7].toInt() != 0
 
                         val calibrationUpdate = CalibrationUpdate(
                             deviceId = gatt.device.address,
@@ -915,7 +930,9 @@ class BleManager(private val context: Context) {
                             maxAccel = maxAccel,
                             minAccel = minAccel,
                             suggestedThreshold = suggestedThreshold,
-                            isComplete = isComplete
+                            isComplete = isComplete,
+                            isCapturingBaseline = isCapturingBaseline,
+                            baselineRejected = baselineRejected
                         )
 
                         _calibrationUpdates.value = calibrationUpdate
@@ -1226,6 +1243,19 @@ class BleManager(private val context: Context) {
         enqueueDescriptorWrite(gatt, descriptor, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE, "stroke-event-late")
 
         Log.d(TAG, "Enabled stroke event notifications for: ${gatt.device.address}")
+    }
+
+    /**
+     * Subscribe to stroke-event notifications on every connected device, so the phone hears all
+     * Catches — not just the pacer's — for Sync Score measurement. Every device already detects
+     * strokes in firmware; this just opens the notification channel. Called at session start. (ADR-0015)
+     */
+    fun enableStrokeNotificationsForAllConnected() {
+        deviceGattMap.forEach { (deviceId, gatt) ->
+            if (deviceStatusMap[deviceId] == DeviceStatus.Connected) {
+                enableStrokeNotifications(gatt)
+            }
+        }
     }
 
     fun enableStrokeDetection(deviceId: String): Boolean {

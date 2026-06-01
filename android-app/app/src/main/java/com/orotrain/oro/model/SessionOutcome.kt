@@ -5,30 +5,37 @@ package com.orotrain.oro.model
  * Pure data — knows nothing about audio prompts or screens.
  */
 data class SessionOutcome(
-    val syncScore: Int,
-    val syncRating: SyncRating,
+    // syncScore/syncRating are null when sync was Not Measured (no follower Catches to compare —
+    // e.g. a single-device session). This is distinct from a Poor score. (ADR-0015)
+    val syncScore: Int?,
+    val syncRating: SyncRating?,
     val powerRange: PowerRange
 ) {
-    companion object {
-        // Sync Score is linear: 50ms avg latency → 100, 300ms avg latency → 0.
-        // See CONTEXT.md "Sync Score".
-        private const val PERFECT_SYNC_LATENCY_MS = 50.0
-        private const val ZERO_SYNC_LATENCY_MS    = 300.0
-        private const val SYNC_RANGE_MS           = ZERO_SYNC_LATENCY_MS - PERFECT_SYNC_LATENCY_MS
+    val syncMeasured: Boolean get() = syncScore != null
 
+    companion object {
+        // Sync Score is linear on the absolute catch gap: ≤50ms → 100, ≥300ms → 0.
+        // See CONTEXT.md "Sync Score" and ADR-0015.
+        private const val PERFECT_SYNC_GAP_MS = 50.0
+        private const val ZERO_SYNC_GAP_MS    = 300.0
+        private const val SYNC_RANGE_MS       = ZERO_SYNC_GAP_MS - PERFECT_SYNC_GAP_MS
+
+        /**
+         * @param crewAverageGapMs the crew's average absolute follower↔pacer catch gap, or null
+         *        when there was nothing to measure (Sync Score = Not Measured).
+         */
         fun compute(
-            followerLatenciesMs: Collection<Int>,
+            crewAverageGapMs: Double?,
             strokeFsrPeakPercents: Collection<Int>
         ): SessionOutcome {
-            val avgLatencyMs = if (followerLatenciesMs.isEmpty()) ZERO_SYNC_LATENCY_MS
-                               else followerLatenciesMs.average()
-            val syncScore = ((ZERO_SYNC_LATENCY_MS - avgLatencyMs) / SYNC_RANGE_MS * 100.0)
-                .coerceIn(0.0, 100.0).toInt()
+            val syncScore = crewAverageGapMs?.let { gap ->
+                ((ZERO_SYNC_GAP_MS - gap) / SYNC_RANGE_MS * 100.0).coerceIn(0.0, 100.0).toInt()
+            }
             val avgFsrPeak = if (strokeFsrPeakPercents.isEmpty()) 0
                              else strokeFsrPeakPercents.average().toInt()
             return SessionOutcome(
                 syncScore = syncScore,
-                syncRating = SyncRating.fromScore(syncScore),
+                syncRating = syncScore?.let { SyncRating.fromScore(it) },
                 powerRange = PowerRange.fromPeakPercent(avgFsrPeak)
             )
         }

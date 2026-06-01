@@ -57,10 +57,12 @@ class MainViewModel(
     // Real-time coaching feedback engine
     private val coachingEngine = CoachingEngine(bleManager, audioManager)
 
-    // Tracks Android-side receive time of pacer's last CATCH event for sync latency calculation
-    @Volatile private var pacerLastCatchReceivedMs: Long? = null
-    // Running (sum, count) per follower device for session-average sync latency
-    private val syncLatencyAccumulator = mutableMapOf<String, Pair<Long, Int>>()
+    // Catches recorded during an active Session; the end-of-session Sync Score is computed from
+    // these (ADR-0015). lastDeviceTimestampMs detects a mid-session reboot (device clock resets to
+    // ~0) so that device's now-stale samples are dropped. Both are guarded by syncLock.
+    private val syncLock = Any()
+    private val sessionCatchSamples = mutableListOf<com.orotrain.oro.model.CatchSample>()
+    private val lastDeviceTimestampMs = mutableMapOf<String, Long>()
 
     init {
         // Observe BLE manager state if available
@@ -70,17 +72,23 @@ class MainViewModel(
                     _uiState.update { state ->
                         val mergedDevices = devices.map { device ->
                             val existing = state.devices.find { it.id == device.id }
-                            // Note: calibrationState is intentionally NOT preserved — on every
-                            // reconnect we trust the BLE-layer default (NotStarted). The firmware-side
-                            // calibration state is reset on every cold boot anyway (RAM clears on
-                            // System OFF), and preserving a stale InProgress/Complete across reconnects
-                            // strands the dialog in the wrong view.
+                            // A COMPLETED calibration is preserved across reconnects so a Bluetooth
+                            // blip (device stays powered, RAM intact) no longer forces a redo. An
+                            // in-progress calibration is NOT preserved, to avoid stranding the dialog.
+                            // If the device actually rebooted and came back uncalibrated, its reported
+                            // DeviceState (via deviceStateUpdates / handleDeviceStateUpdate) corrects
+                            // this back to NotStarted within a few seconds. (ADR-0003 / device-state sync)
                             device.copy(
                                 seat = existing?.seat,
                                 batteryLevel = device.batteryLevel ?: existing?.batteryLevel,
                                 strokeThreshold = existing?.strokeThreshold ?: device.strokeThreshold,
                                 strokeCount = existing?.strokeCount ?: device.strokeCount,
                                 lastStrokePhase = existing?.lastStrokePhase ?: device.lastStrokePhase,
+                                calibrationState = if (existing?.calibrationState == CalibrationState.Complete)
+                                    CalibrationState.Complete else device.calibrationState,
+                                calibrationProgress = existing?.calibrationProgress ?: device.calibrationProgress,
+                                calibrationMaxAccel = existing?.calibrationMaxAccel ?: device.calibrationMaxAccel,
+                                calibrationMinAccel = existing?.calibrationMinAccel ?: device.calibrationMinAccel,
                                 topHandPressurePercent = existing?.topHandPressurePercent ?: device.topHandPressurePercent,
                                 topHandPressureThresholdTriggered = existing?.topHandPressureThresholdTriggered ?: device.topHandPressureThresholdTriggered
                             )
@@ -107,6 +115,13 @@ class MainViewModel(
                 it.calibrationUpdates.collect { calibrationUpdate ->
                     calibrationUpdate?.let { update ->
                         handleCalibrationUpdate(update)
+                    }
+                }
+            }
+            viewModelScope.launch {
+                it.deviceStateUpdates.collect { deviceStateUpdate ->
+                    deviceStateUpdate?.let { update ->
+                        handleDeviceStateUpdate(update)
                     }
                 }
             }
@@ -138,42 +153,25 @@ class MainViewModel(
     }
 
     private fun handleStrokeEvent(event: BleManager.StrokeEvent) {
-        // Forward to analytics engine only during active training
-        if (_uiState.value.trainingSession.status == com.orotrain.oro.model.TrainingStatus.Active) {
+        val isActive = _uiState.value.trainingSession.status == com.orotrain.oro.model.TrainingStatus.Active
+        val pacerId = _uiState.value.devices.find { it.seat == 1 }?.id
+
+        // Stroke analytics (SPM, drive ratio, Power Range, coaching) are PACER-only. Every device
+        // now reports its own Catches (ADR-0015), so feeding follower events here would pollute the
+        // metrics with other paddlers.
+        if (isActive && event.deviceId == pacerId) {
             strokeAnalyzer.onStrokeEvent(event)
         }
 
-        // Record pacer CATCH receive time and compute follower sync latency before state update.
-        // Both mutations (pacerLastCatchReceivedMs, syncLatencyAccumulator) must live outside
-        // _uiState.update because StateFlow.update retries its lambda under CAS contention.
-        val nowMs = System.currentTimeMillis()
-        val syncQualityUpdate: Pair<String, Int>? = run {
-            if (_uiState.value.trainingSession.status == com.orotrain.oro.model.TrainingStatus.Active &&
-                event.phase == BleManager.STROKE_PHASE_CATCH) {
-                val pacer = _uiState.value.devices.find { it.seat == 1 }
-                if (event.deviceId == pacer?.id) {
-                    pacerLastCatchReceivedMs = nowMs
-                    null
-                } else {
-                    val pacerTs = pacerLastCatchReceivedMs
-                    if (pacerTs != null) {
-                        val latencyMs = (nowMs - pacerTs).toInt().coerceIn(0, 2000)
-                        val (prevSum, prevCount) = syncLatencyAccumulator.getOrDefault(event.deviceId, Pair(0L, 0))
-                        val newSum = prevSum + latencyMs
-                        val newCount = prevCount + 1
-                        syncLatencyAccumulator[event.deviceId] = Pair(newSum, newCount)
-                        event.deviceId to (newSum / newCount).toInt()
-                    } else null
-                }
-            } else null
+        // Record every Catch (pacer + followers) for the end-of-session Sync Score (ADR-0015).
+        if (isActive && event.phase == BleManager.STROKE_PHASE_CATCH) {
+            recordCatchForSync(event)
         }
 
-        // Compute training progression as a pure value BEFORE the state update, mirroring the
-        // syncQualityUpdate pattern above. Its side effects (audio, zone reconfigure, session
-        // stop) are executed exactly once after the update commits — never inside the update
-        // lambda, which StateFlow.update may re-run under CAS contention.
-        val pacerId = _uiState.value.devices.find { it.seat == 1 }?.id
-        val isPacerFinish = _uiState.value.trainingSession.status == com.orotrain.oro.model.TrainingStatus.Active &&
+        // Compute training progression as a pure value BEFORE the state update. Its side effects
+        // (audio, zone reconfigure, session stop) run exactly once after the update commits — never
+        // inside the update lambda, which StateFlow.update may re-run under CAS contention.
+        val isPacerFinish = isActive &&
             event.deviceId == pacerId &&
             event.phase == BleManager.STROKE_PHASE_FINISH
         val progression: StrokeProgression? = if (isPacerFinish) {
@@ -205,15 +203,8 @@ class MainViewModel(
                 }
             }
 
-            // Apply pre-computed progression and sync quality update
-            val sessionAfterProgress = progression?.session ?: state.trainingSession
-            val updatedSession = if (syncQualityUpdate != null) {
-                sessionAfterProgress.copy(
-                    syncQuality = sessionAfterProgress.syncQuality + syncQualityUpdate
-                )
-            } else {
-                sessionAfterProgress
-            }
+            // Apply pre-computed progression
+            val updatedSession = progression?.session ?: state.trainingSession
 
             state.copy(
                 devices = updatedDevices,
@@ -243,6 +234,29 @@ class MainViewModel(
         }
     }
 
+    /**
+     * Records a Catch for the end-of-session Sync Score. If a device's clock jumped backwards (a
+     * mid-session reboot resets millis()), its now-meaningless earlier samples are dropped so the
+     * clock-offset estimate stays correct. (ADR-0015)
+     */
+    private fun recordCatchForSync(event: BleManager.StrokeEvent) {
+        val nowMs = System.currentTimeMillis()
+        synchronized(syncLock) {
+            val last = lastDeviceTimestampMs[event.deviceId]
+            if (last != null && event.timestamp < last) {
+                sessionCatchSamples.removeAll { it.deviceId == event.deviceId }
+            }
+            lastDeviceTimestampMs[event.deviceId] = event.timestamp
+            sessionCatchSamples.add(
+                com.orotrain.oro.model.CatchSample(
+                    deviceId = event.deviceId,
+                    deviceTimestampMs = event.timestamp,
+                    phoneReceiveMs = nowMs
+                )
+            )
+        }
+    }
+
     private fun handleCalibrationUpdate(update: BleManager.CalibrationUpdate) {
         _uiState.update { state ->
             val updatedDevices = state.devices.map { device ->
@@ -252,6 +266,8 @@ class MainViewModel(
                         calibrationMaxAccel = update.maxAccel,
                         calibrationMinAccel = update.minAccel,
                         strokeThreshold = update.suggestedThreshold,
+                        isCapturingBaseline = update.isCapturingBaseline,
+                        baselineRejected = update.baselineRejected,
                         calibrationState = if (update.isComplete) {
                             CalibrationState.Complete
                         } else {
@@ -267,6 +283,38 @@ class MainViewModel(
 
         Log.d(TAG, "Calibration update applied for ${update.deviceId}: " +
                 "${update.strokeCount}/50 strokes, threshold=${update.suggestedThreshold}g")
+    }
+
+    /**
+     * Resync a device's calibration state from the firmware's own reported DeviceState (received
+     * periodically via the device-status heartbeat). This is what makes calibration survive a
+     * Bluetooth blip but reset correctly after a real reboot. An active calibration (InProgress) is
+     * left to handleCalibrationUpdate so the heartbeat can't flicker the dialog. (ADR-0003)
+     *
+     * Firmware DeviceState bytes: 0x00 IDLE, 0x01 READY, 0x02 TRAINING, 0x03 PAUSED,
+     * 0x04 COMPLETE, 0x05 CALIBRATING, 0xFF ERROR.
+     */
+    private fun handleDeviceStateUpdate(update: BleManager.DeviceStateUpdate) {
+        val mapped = when (update.firmwareState) {
+            0x00 -> CalibrationState.NotStarted              // Idle: uncalibrated (e.g. after reboot)
+            0x01, 0x02, 0x03, 0x04 -> CalibrationState.Complete  // Ready/Training/Paused/Complete: calibrated
+            else -> return                                    // Calibrating/Error: leave to the calibration flow
+        }
+
+        _uiState.update { state ->
+            val updatedDevices = state.devices.map { device ->
+                if (device.id == update.deviceId &&
+                    device.calibrationState != CalibrationState.InProgress &&
+                    device.calibrationState != mapped
+                ) {
+                    Log.d(TAG, "Device-state sync: ${update.deviceId} -> $mapped (firmwareState=0x${update.firmwareState.toString(16)})")
+                    device.copy(calibrationState = mapped)
+                } else {
+                    device
+                }
+            }
+            state.copy(devices = updatedDevices)
+        }
     }
 
     private fun handleFsrUpdate(update: BleManager.FsrUpdate) {
@@ -310,11 +358,16 @@ class MainViewModel(
         }
 
         if (progression.sessionComplete) {
+            val pacerId = _uiState.value.devices.find { it.seat == 1 }?.id
+            val crewGapMs = synchronized(syncLock) {
+                com.orotrain.oro.model.SyncComputer.crewAverageGapMs(sessionCatchSamples.toList(), pacerId)
+            }
             val outcome = SessionOutcome.compute(
-                followerLatenciesMs = _uiState.value.trainingSession.syncQuality.values,
+                crewAverageGapMs = crewGapMs,
                 strokeFsrPeakPercents = strokeAnalyzer.getAllStrokes().map { it.fsrPeakPercent }
             )
-            broadcastAudioPrompt(sessionSummaryAudioPromptFor(outcome), 100)
+            // Sync Score may be Not Measured (e.g. single-device session) → skip the spoken sync summary.
+            sessionSummaryAudioPromptFor(outcome)?.let { broadcastAudioPrompt(it, 100) }
             stopTrainingSession()
         }
     }
@@ -665,7 +718,12 @@ class MainViewModel(
         _uiState.update { state ->
             val updatedDevices = state.devices.map { device ->
                 if (device.id == deviceId) {
-                    device.copy(calibrationState = CalibrationState.InProgress, strokeCount = 0)
+                    device.copy(
+                        calibrationState = CalibrationState.InProgress,
+                        strokeCount = 0,
+                        isCapturingBaseline = true,   // starts in the hold-still baseline window (ADR-0012)
+                        baselineRejected = false
+                    )
                 } else {
                     device
                 }
@@ -754,6 +812,10 @@ class MainViewModel(
         // Reset analytics and coaching for new session
         strokeAnalyzer.reset()
         coachingEngine.reset()
+        synchronized(syncLock) {
+            sessionCatchSamples.clear()
+            lastDeviceTimestampMs.clear()
+        }
 
         // Set status to Starting
         _uiState.update {
@@ -778,6 +840,10 @@ class MainViewModel(
             connectedDevices.forEach { device ->
                 startDeviceTraining(device.id)
             }
+
+            // Listen to every device's Catches (not just the pacer's) so follower sync can be
+            // measured. Every device already detects by default in firmware. (ADR-0015)
+            bleManager?.enableStrokeNotificationsForAllConnected()
 
             // Enable stroke detection on pacer (Seat 1)
             val pacer = connectedDevices.find { it.seat == 1 }
@@ -873,8 +939,10 @@ class MainViewModel(
     fun stopTrainingSession() {
         val state = _uiState.value
         if (!state.trainingSession.isActive) return
-        pacerLastCatchReceivedMs = null
-        syncLatencyAccumulator.clear()
+        synchronized(syncLock) {
+            sessionCatchSamples.clear()
+            lastDeviceTimestampMs.clear()
+        }
 
         _uiState.update {
             it.copy(
