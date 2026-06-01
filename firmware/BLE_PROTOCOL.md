@@ -255,10 +255,13 @@ Sent periodically during calibration and on completion.
 ```
 Byte 0:    Command echo (CAL_CMD_GET_STATUS = 0x04)
 Byte 1:    Stroke count so far (uint8, target = 50)
-Bytes 2–3: Max acceleration seen × 100 (int16 LE)
-Bytes 4–5: Min acceleration seen × 100 (int16 LE)
-Bytes 6–7: Reserved (0x00)
+Bytes 2–3: Max acceleration seen × 100 (int16 LE) — measured relative to resting baseline (ADR-0012)
+Bytes 4–5: Min acceleration seen × 100 (int16 LE) — measured relative to resting baseline (ADR-0012)
+Byte 6:    Taring (uint8, 1 = capturing resting baseline, hold paddle still; 0 = stroke-counting phase) — ADR-0012
+Byte 7:    Baseline rejected (uint8, 1 = paddle wasn't still, hold still and calibrate again; 0 = OK) — ADR-0012
 ```
+
+Calibration now begins with a ~1 s resting-baseline (tare) window: the device must be held still while it learns its zero. During that window byte 6 = 1 and the stroke count stays 0. If the paddle was moving, byte 7 = 1 and the device enters the Error state — re-send `CAL_CMD_START` to retry. Bytes 6–7 were previously reserved (0x00), so older app builds that ignore them remain compatible.
 
 **Notify Format — Threshold Acknowledged: 4 bytes**
 

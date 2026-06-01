@@ -27,7 +27,7 @@ A named, reusable ordered list of zones designed by a coach. Created in the Conf
 _Avoid_: workout plan, training plan, schedule
 
 **Session**:
-A complete training run through all zones in a Programme, in order.
+A complete training run through an ordered list of Zones. Those Zones are usually copied from a loaded **Programme**, but may also be assembled directly on the Training screen without saving a Programme first — an **ad-hoc Session** (ADR-0013). A Session always runs the Zones currently loaded, whatever their source.
 _Avoid_: workout, training run
 
 **SPM**:
@@ -93,8 +93,12 @@ _Avoid_: pressure zone, force level, intensity (reserved for Zone intensity)
 ### Device lifecycle
 
 **Calibration**:
-A pre-session setup step where a device samples the paddler's stroke motion to set its detection threshold. A device must complete calibration before it is ready for training. Calibration progresses through three mutually-exclusive states — **Not Started**, **In Progress**, **Complete** — mirroring the firmware's calibration lifecycle (ADR-0003). This is a single state, not a pair of booleans.
+A pre-session setup step where a device first establishes its **Resting Baseline** (its reading while held still) and then samples the paddler's stroke motion to set its detection threshold. Detection measures movement *relative to rest*, not absolute tilt — so two devices with identical firmware can still be made to agree (ADR-0012). A device must complete calibration before it is ready for training. Calibration progresses through three mutually-exclusive states — **Not Started**, **In Progress**, **Complete** — mirroring the firmware's calibration lifecycle (ADR-0003). This is a single state, not a pair of booleans.
 _Avoid_: tuning, threshold setup; isCalibrating/isCalibrationComplete flag pair
+
+**Resting Baseline**:
+A device's accelerometer reading while held still, captured at the start of Calibration and subtracted from every subsequent reading. Removes both gravity's pull on the measured axis and each unit's built-in sensor offset, so detection responds to movement rather than orientation (ADR-0012).
+_Avoid_: zero point, offset, tare (use these only as internal/implementation terms)
 
 **Ready**:
 The state of a device whose Calibration is Complete and can participate in a session.
@@ -103,8 +107,8 @@ _Avoid_: calibrated, connected (connected means BLE link only, not readiness for
 ### Synchronisation
 
 **Sync Score**:
-A 0–100 per-device score measuring how closely a follower's Catch aligns with the pacer's Catch. 100 = within 50ms; 0 = 300ms or more behind.
-_Avoid_: sync percentage, match score
+A 0–100 per-device score measuring how closely a follower's Catch aligns in time with the pacer's Catch. It is the **absolute** timing gap, so catching early (rushing ahead of the pacer) counts against it exactly as much as catching late (lagging): 100 = within 50ms either way, 0 = 300ms or more off. The gap is measured in a common timeline built from each device's own Catch timestamp (the phone aligns the devices' clocks), and each follower Catch is paired to the nearest pacer Catch. When there are no follower Catches to compare — e.g. a single-device session — the Sync Score is **Not Measured**, which is distinct from a Poor score (ADR-0015).
+_Avoid_: sync percentage, match score; "behind" (the gap is symmetric, not just lateness)
 
 **Crew Sync**:
 The aggregate synchronisation state across all connected followers in a session.
@@ -134,15 +138,15 @@ _Avoid_: Android app, mobile app
 ## Relationships
 
 - A **Programme** is a named ordered list of one or more **Zones**, created in the **Configuration Planner**
-- A **Session** runs through the **Zones** of a **Programme** in order
+- A **Session** runs through an ordered list of **Zones**; those Zones are usually copied from a loaded **Programme**, but may be built directly for an ad-hoc Session (ADR-0013)
 - A **Zone** has one **Intensity** (Low, Medium, or High)
 - A **Zone** runs for N **Sets**, each of N **Strokes**
 - A **Device** occupies exactly one **Seat** within one **Canoe**; its identity is **Canoe + Seat**
 - There is exactly one **Pacer** per **Session**, designated by the coach; all other devices are **Followers**
 - A **Device** must complete **Calibration** before it is **Ready** to join a **Session**
-- The **Pacer** emits **Stroke Events**; the **Training Controller** uses the **Catch** event to trigger haptics on all **Followers** (phone-mediated — devices do not signal each other directly)
-- **Catch** detection requires an IMU trigger confirmed by a **Top Hand Pressure** rise within a short window
-- A **Follower**'s **Sync Score** is calculated from the latency between the **Pacer**'s Catch and the **Follower**'s Catch
+- During a Session **every Device detects its own Catch** and reports it to the **Training Controller**; only the **Pacer**'s Catch triggers haptics on all **Followers** (phone-mediated — devices do not signal each other directly) and advances the stroke count, while each **Follower**'s own Catch is used only to score its synchronisation (ADR-0015)
+- **Catch** detection is *intended* to require an IMU trigger confirmed by a **Top Hand Pressure** rise within a short window (ADR-0004); today detection is IMU-only — the pressure-confirmation gate is still an open item (see Open questions below)
+- A **Follower**'s **Sync Score** is the absolute timing gap between its Catch and the nearest **Pacer** Catch (ADR-0015)
 - A stroke's **Peak Pressure** is the maximum **Top Hand Pressure** during the **Drive** phase; it maps to a **Power Range**
 - A **Session** produces a **Session Summary** with a **Sync Rating** and a crew **Power Range**; the summary is displayed in the **Training Controller** and broadcast to all devices as a pre-recorded voice prompt
 

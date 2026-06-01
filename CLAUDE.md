@@ -81,11 +81,11 @@ Seats are auto-assigned by device name order when devices connect. The coach can
 
 ### Session Lifecycle
 
-1. **Pre-session**: Devices connect → auto-assigned seats → each device completes Calibration (50 strokes, firmware sets threshold at 55% of peak acceleration) → device becomes `isCalibrationComplete = true`.
-2. `canStartTraining` requires: active programme, ≥1 connected device, all connected devices calibrated.
-3. **Session start**: `configureCurrentZone()` sends Zone Settings BLE packet (with `isPacer = seat == 1`) → `startTraining()` on all devices → `enableStrokeDetection()` on Pacer only → status = Active.
-4. **During session**: Pacer Catch → phone triggers haptics on all (including Pacer). Pacer Finish → `processStrokeForTraining()` advances stroke/set/zone. Zone transitions broadcast audio prompts (beep, voice).
-5. **Session end**: `selectSessionSummaryPrompt()` picks from 12 pre-recorded prompts (Sync Rating × Power Range) → broadcasts audio → saves to Room DB via `SessionRepository`.
+1. **Pre-session**: Devices connect → auto-assigned seats → each device completes Calibration (a ~1s resting-baseline/tare hold, then 50 strokes; firmware sets threshold at 55% of peak acceleration *above rest* — ADR-0012) → device reaches `CalibrationState.Complete`. Calibration survives a BLE reconnect; the firmware's reported DeviceState is the source of truth (ADR-0014).
+2. `canStartTraining` and the Pre-Training Checklist derive from one shared list, `OroUiState.startChecks` (ADR-0013). Blocking checks: ≥1 connected device, a Pacer in Seat 1, all connected devices calibrated, ≥1 zone. A loaded Programme is **not** required (ad-hoc sessions allowed); low battery warns but never blocks.
+3. **Session start**: `configureCurrentZone()` sends Zone Settings BLE packet (with `isPacer = seat == 1`) → `startTraining()` on all devices → `enableStrokeDetection()` on the Pacer (firmware detects on every device by default) → `enableStrokeNotificationsForAllConnected()` so the phone hears *every* device's Catches for sync (ADR-0015) → status = Active.
+4. **During session**: every device reports its own Catches. The Pacer's Catch → phone triggers haptics on all (including Pacer); each Follower's Catch feeds only its Sync Score. Pacer Finish → `processStrokeForTraining()` advances stroke/set/zone. Stroke analytics (SPM, Power Range, coaching) are fed the **Pacer's** events only. Zone transitions broadcast audio prompts (beep, voice).
+5. **Session end**: `SyncComputer.crewAverageGapMs()` computes the crew sync gap from the recorded Catches (clock-aligned per device, absolute gap — ADR-0015); `SessionOutcome.compute()` derives Sync Rating × Power Range; `sessionSummaryAudioPromptFor()` picks one of 12 pre-recorded prompts (or **none** when sync is Not Measured) → broadcasts audio → saves to Room DB via `SessionRepository`.
 
 ### Stroke Analysis Pipeline
 
@@ -119,11 +119,17 @@ Seats are auto-assigned by device name order when devices connect. The coach can
 | 0009 | Firmware owns the RGB LED state machine; no BLE LED-control characteristic |
 | 0010 | Seat 1 = Pacer — no separate pacer designation UI |
 | 0011 | Tact switch (D10) → 2-s hold → System OFF; wake by same pin reboots firmware |
+| 0012 | Stroke detection subtracts a per-device resting baseline (tare) so identical firmware gives consistent sensitivity |
+| 0013 | A Session starts from the loaded Zones (ad-hoc allowed); no saved Programme required. Start button + checklist share one requirement list |
+| 0014 | Calibration survives a BLE reconnect; firmware DeviceState (via ~3s heartbeat) is the source of truth, so a blip no longer forces a redo |
+| 0015 | Sync Score: all devices detect & report their Catch; score is the absolute follower↔pacer gap on an aligned clock; no data → Not Measured (not Poor) |
 
 ## Known Open Issues
 
 - **6-device BLE cap**: firmware and Android BLE code currently limit connections to 6 devices. Two OC6 canoes needs 12.
+- **Sync notification load**: since ADR-0015 the phone subscribes to *every* device's Catch events during a session (not just the Pacer's), increasing BLE notification traffic. Validate this against the 6→12 device goal.
 - **SPM is fixed per intensity level**: `Zone.targetSpm` is a hardcoded midpoint. The BLE protocol supports per-zone SPM; this is not yet surfaced in the UI.
+- **Sync Score thresholds are placeholders**: the 50 ms / 300 ms gap bounds and the per-device clock-offset assumptions (ADR-0015) are unvalidated against field data.
 
 ## Deferred Refactors
 
