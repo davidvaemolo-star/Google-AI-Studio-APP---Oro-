@@ -103,7 +103,7 @@ class StrokeAnalyzer {
             BleManager.STROKE_PHASE_CATCH -> {
                 pendingCatchTimestamp = event.timestamp
                 pendingPeakAccel = event.peakAccel
-                pendingFsrPeak = event.fsrForcePercent
+                pendingFsrPeak = event.topHandPressurePercent
 
                 // Update previous stroke's recovery duration and drive ratio
                 if (allStrokes.isNotEmpty() && lastFinishTimestamp > 0) {
@@ -130,8 +130,8 @@ class StrokeAnalyzer {
                 if (event.peakAccel > pendingPeakAccel) {
                     pendingPeakAccel = event.peakAccel
                 }
-                if (event.fsrForcePercent > pendingFsrPeak) {
-                    pendingFsrPeak = event.fsrForcePercent
+                if (event.topHandPressurePercent > pendingFsrPeak) {
+                    pendingFsrPeak = event.topHandPressurePercent
                 }
             }
 
@@ -167,7 +167,7 @@ class StrokeAnalyzer {
                     totalStrokeDurationMs = 0,      // Filled on next CATCH
                     driveRatio = 0f,                // Filled on next CATCH
                     fsrPeakPercent = pendingFsrPeak,
-                    fsrAtFinish = event.fsrForcePercent,
+                    fsrAtFinish = event.topHandPressurePercent,
                     powerScore = powerScore
                 )
                 allStrokes.add(record)
@@ -350,16 +350,6 @@ class StrokeAnalyzer {
                 event
             } else null
         } else null
-    }
-
-    /**
-     * Returns the average peak top-hand pressure across all strokes in the session.
-     * Used to compute Power Range for the Session Summary prompt.
-     * Returns 0 if no strokes have been recorded.
-     */
-    fun sessionAverageFsrPeak(): Int {
-        if (allStrokes.isEmpty()) return 0
-        return allStrokes.map { it.fsrPeakPercent }.average().toInt()
     }
 
     fun reset() {

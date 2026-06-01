@@ -25,6 +25,7 @@
 #include "LSM6DS3.h"  // Use Seeed_Arduino_LSM6DS3 library
 #include "audio_i2s.h"  // I2S audio playback for MAX98357A
 #include "audio_prompts.h"  // Voice prompt audio data
+#include "external_audio.h"
 
 // ============================================================================
 // HARDWARE CONFIGURATION
@@ -44,6 +45,24 @@
 #define BATTERY_PIN A0
 #define BATTERY_READ_INTERVAL 30000  // Read every 30 seconds
 
+// RGB LED Pins (external common-cathode LED — Active HIGH)
+// Use Arduino pin numbers (not raw nRF GPIO) — HwPWM.addPin() and other library
+// abstractions validate against the variant's pin map (PINS_COUNT) and reject
+// raw GPIO numbers like 44/45/46 with ERROR_INVALID_PARAM.
+// XIAO nRF52840 Sense variant: D7→P1.12, D8→P1.13, D9→P1.14.
+#define LED_R_PIN 9   // D9 → P1.14
+#define LED_G_PIN 8   // D8 → P1.13
+#define LED_B_PIN 7   // D7 → P1.12
+
+// Power Button (Tact Switch) — D10 = P1.15. See ADR-0011.
+// 2-second hold → System OFF; single-press wake reboots the firmware.
+// Use Arduino pin 10 (not raw GPIO 47); the variant maps Arduino-10 → P1.15.
+// Raw GPIO numbers don't reliably support INPUT_PULLUP via the Arduino abstraction.
+#define BUTTON_PIN 10               // D10 (Arduino) → P1.15 on XIAO Sense
+#define BUTTON_PIN_RAW 47           // For nrf_gpio_cfg_sense_input in powerOff()
+#define POWER_HOLD_MS 2000          // Hold duration for power-off
+#define BUTTON_DEBOUNCE_MS 50
+
 // FSR (Force Sensitive Resistor) Configuration
 #define FSR_PIN A3                    // Analog pin for FSR
 #define FSR_READ_INTERVAL_MS 50       // Read every 50ms (20Hz) - sufficient for grip monitoring
@@ -62,8 +81,15 @@ AudioI2S audioPlayer;
 // IMU Stroke Detection Settings
 #define IMU_SAMPLE_RATE_HZ 104       // 104 Hz sampling rate
 #define STROKE_DETECT_THRESHOLD 1.0  // Acceleration threshold in g (based on real paddle data: peak ~1.83g, using 55%)
-#define STROKE_MIN_INTERVAL_MS 200   // Minimum time between strokes (prevents double-counting)
+// Refractory period: a stroke cannot be counted within this window of the previous one.
+// A paddle physically tops out around 80 SPM (High intensity) = 750ms/stroke, so 500ms can
+// never merge two real strokes, yet it absorbs the recovery/return-swing acceleration spike
+// (~250ms after Finish) that was otherwise being miscounted as a second stroke. The old 200ms
+// was shorter than a single stroke cycle, so the return swing slipped through as a new Catch.
+#define STROKE_MIN_INTERVAL_MS 500   // Minimum time between counted strokes (max ~120 SPM)
 #define CALIBRATION_SAMPLES 10      // Number of samples for calibration
+#define TARE_DURATION_MS 1000       // Resting-baseline sampling window at calibration start (ADR-0012)
+#define TARE_MAX_SPREAD 0.20        // Max accelY spread (g) allowed during tare; above this the paddle wasn't held still
 
 // ============================================================================
 // BLE SERVICE AND CHARACTERISTIC UUIDs
@@ -81,7 +107,6 @@ AudioI2S audioPlayer;
 #define CALIBRATION_CHAR_UUID       "12340006-1234-5678-1234-56789abcdef0"  // Write/Notify - calibration control
 #define AUDIO_CONTROL_CHAR_UUID     "12340007-1234-5678-1234-56789abcdef0"  // Write - trigger audio prompts
 #define FSR_DATA_CHAR_UUID          "12340008-1234-5678-1234-56789abcdef0"  // Notify - FSR force data
-#define LED_CONTROL_CHAR_UUID       "12340009-1234-5678-1234-56789abcdef0"  // Write - LED control
 
 // Standard Battery Service
 #define BATTERY_SERVICE_UUID        "180F"
@@ -128,10 +153,6 @@ BLECharacteristic audioControlChar = BLECharacteristic(AUDIO_CONTROL_CHAR_UUID);
 // FSR Data: Notify only
 // Format: [force_percent(1 byte)][raw_adc(2 bytes LE)][threshold_triggered(1 byte)]
 BLECharacteristic fsrDataChar = BLECharacteristic(FSR_DATA_CHAR_UUID);
-
-// LED Control: Write only
-// Format: [command(1 byte)][r(1 byte)][g(1 byte)][b(1 byte)][param(1 byte)]
-BLECharacteristic ledControlChar = BLECharacteristic(LED_CONTROL_CHAR_UUID);
 
 // ============================================================================
 // DEVICE STATE MANAGEMENT
@@ -236,6 +257,7 @@ struct TrainingState {
 
 TrainingConfig trainingConfig = {0, 0, 0, 0, false};
 TrainingState trainingState = {STATE_IDLE, 0, 0, 100, 0, 0};
+bool isPacer = false;  // Set via Zone Settings write (role byte)
 
 // Stroke Detection State
 struct StrokeDetectionState {
@@ -251,6 +273,7 @@ struct StrokeDetectionState {
   unsigned long driveTimestamp;   // millis() when DRIVE detected
   unsigned long finishTimestamp;  // millis() when FINISH detected
   uint8_t fsrPeakDuringStroke;   // Peak FSR force% during this stroke
+  float restBaseline;            // Device's resting accelY, subtracted from readings (tare) — ADR-0012
 };
 
 StrokeDetectionState strokeDetection = {
@@ -262,18 +285,25 @@ StrokeDetectionState strokeDetection = {
   0.0,                           // no minimum yet
   false,                         // not in stroke
   0, 0, 0,                       // phase timestamps
-  0                              // FSR peak during stroke
+  0,                             // FSR peak during stroke
+  0.0                            // resting baseline (set during calibration tare)
 };
 
 // Calibration State
 struct CalibrationState {
   bool active;
+  bool taring;                // Capturing resting baseline (still window) before counting strokes — ADR-0012
+  unsigned long tareStartMs;  // millis() when the tare window began
+  float tareSum;              // Running sum of accelY samples during tare
+  uint16_t tareSamples;       // Number of accelY samples collected during tare
+  float tareMin;              // Min accelY seen during tare (for stillness check)
+  float tareMax;              // Max accelY seen during tare (for stillness check)
   uint8_t strokeCount;  // Count actual strokes, not samples
   float maxAccelSeen;
   float minAccelSeen;
 };
 
-CalibrationState calibrationState = {false, 0, 0.0, 0.0};
+CalibrationState calibrationState = {false, false, 0, 0.0, 0, 0.0, 0.0, 0, 0.0, 0.0};
 
 // FSR State
 struct FsrState {
@@ -287,6 +317,17 @@ struct FsrState {
 };
 
 FsrState fsrState = {0.0f, 0, 0, false, 0, 100, 900};  // Reasonable defaults for typical FSR
+
+// Power button state — see ADR-0011
+struct ButtonState {
+  bool holding;                  // True between press-down and release/fire
+  bool startupGated;             // True until we observe a HIGH (released) reading.
+                                 // Prevents stuck-low pins from auto-powering-off at boot.
+  unsigned long pressStartMs;    // millis() at falling edge
+  int lastRawRead;               // For debounce
+  unsigned long lastEdgeMs;      // Last debounced state change
+};
+ButtonState buttonState = {false, true, 0, HIGH, 0};
 
 // Battery monitoring
 const float BATTERY_DIVIDER_RATIO = (1000000.0f + 510000.0f) / 510000.0f;  // 2.960784
@@ -312,6 +353,26 @@ void setup() {
   Serial.println("=== Oro Haptic Paddle Firmware ===");
   Serial.println("Hardware: XIAO nRF52840 Sense + DRV2605L");
   Serial.println();
+
+  // Disable onboard XIAO LEDs (active-LOW: HIGH = off). External RGB is the only indicator.
+  pinMode(LED_RED, OUTPUT);   digitalWrite(LED_RED, HIGH);
+  pinMode(LED_GREEN, OUTPUT); digitalWrite(LED_GREEN, HIGH);
+  pinMode(LED_BLUE, OUTPUT);  digitalWrite(LED_BLUE, HIGH);
+
+  // External RGB LED: explicit hardware PWM allocation on HwPWM0 (was HwPWM2 — switched to PWM0
+  // in case the higher modules are claimed implicitly by Bluefruit/audio stacks).
+  // Bare analogWrite on P1.12/13/14 was failing to produce true PWM.
+  // Order matters: config must be set BEFORE begin() — the peripheral latches its
+  // configuration when begin() arms the PWM sequence.
+  HwPWM0.addPin(LED_R_PIN);
+  HwPWM0.addPin(LED_G_PIN);
+  HwPWM0.addPin(LED_B_PIN);
+  HwPWM0.setMaxValue(255);                              // 0–255 brightness range
+  HwPWM0.setClockDiv(PWM_PRESCALER_PRESCALER_DIV_16);   // 1 MHz → ~3.9 kHz at 8-bit
+  HwPWM0.begin();
+  HwPWM0.writePin(LED_R_PIN, 0);
+  HwPWM0.writePin(LED_G_PIN, 0);
+  HwPWM0.writePin(LED_B_PIN, 0);
 
   // Initialize I2C with custom pins
   Wire.begin();
@@ -344,6 +405,11 @@ void setup() {
   } else {
     Serial.println("WARNING: Failed to initialize I2S audio - continuing without audio");
   }
+  if (externalAudio.begin()) {
+    Serial.println("External audio ready (session summary prompts on QSPI).");
+  } else {
+    Serial.println("External audio NOT ready -- summary will use chime fallback.");
+  }
 
   // Initialize BLE
   if (!initializeBLE()) {
@@ -355,6 +421,14 @@ void setup() {
   // Initialize FSR
   pinMode(FSR_PIN, INPUT);
   Serial.println("FSR initialized on pin A3");
+
+  // Power button — D10 input-pullup (idle HIGH, pressed LOW). See ADR-0011.
+  pinMode(BUTTON_PIN, INPUT_PULLUP);
+  delay(10);  // Let pullup settle before the startup gate samples
+
+  // Wake/boot greeting: every cold start (whether from USB plug-in or System OFF wake)
+  // plays "Oro" so the button press is acknowledged audibly before BLE comes up.
+  playAudioEvent(AUDIO_POWER_ON, 100);
 
   // Initialize battery monitoring
   pinMode(BATTERY_PIN, INPUT);
@@ -377,6 +451,7 @@ void setup() {
   Serial.print("Current threshold: ");
   Serial.print(strokeDetection.threshold, 2);
   Serial.println("g");
+
 
   // Play startup haptic
   playHapticEffect(PATTERN_DOUBLE_CLICK, 100);
@@ -476,7 +551,7 @@ bool initializeBLE() {
   // Zone Settings Characteristic (Write)
   zoneSettingsChar.setProperties(CHR_PROPS_WRITE);
   zoneSettingsChar.setPermission(SECMODE_OPEN, SECMODE_OPEN);
-  zoneSettingsChar.setFixedLen(6);
+  zoneSettingsChar.setFixedLen(7);  // [strokes(2)][sets(1)][spm(2)][zone_color(1)][role(1)]
   zoneSettingsChar.setWriteCallback(onZoneSettingsWrite);
   zoneSettingsChar.begin();
 
@@ -501,7 +576,12 @@ bool initializeBLE() {
   // Calibration Characteristic (Write + Notify)
   calibrationChar.setProperties(CHR_PROPS_WRITE | CHR_PROPS_NOTIFY);
   calibrationChar.setPermission(SECMODE_OPEN, SECMODE_OPEN);
-  calibrationChar.setFixedLen(4);  // 1 byte command + 2 bytes threshold + 1 byte status
+  // Writes: 1 byte (CMD_START/STOP) or 3 bytes (CMD_SET_THRESHOLD + int16) — the WRITE side
+  // accepts shorter incoming payloads; the callback's `len` parameter carries the real size.
+  // Notifies: ALL must be exactly 8 bytes (padded if shorter). setMaxLen with CHR_PROPS_NOTIFY
+  // in this Bluefruit version silently drops notifications — setFixedLen with consistent
+  // notify sizes is the reliable path.
+  calibrationChar.setFixedLen(8);
   calibrationChar.setWriteCallback(onCalibrationWrite);
   calibrationChar.begin();
 
@@ -517,13 +597,6 @@ bool initializeBLE() {
   fsrDataChar.setPermission(SECMODE_OPEN, SECMODE_NO_ACCESS);
   fsrDataChar.setFixedLen(4);  // [forcePercent(1)][rawAdc(2 LE)][thresholdTriggered(1)]
   fsrDataChar.begin();
-
-  // LED Control Characteristic (Write)
-  ledControlChar.setProperties(CHR_PROPS_WRITE);
-  ledControlChar.setPermission(SECMODE_OPEN, SECMODE_OPEN);
-  ledControlChar.setFixedLen(5);  // [command(1)][r(1)][g(1)][b(1)][param(1)]
-  ledControlChar.setWriteCallback(onLedControlWrite);
-  ledControlChar.begin();
 
   // Configure Battery Service
   batteryService.begin();
@@ -908,10 +981,23 @@ void loop() {
     }
   }
 
+  // Power button: check every loop iteration. See ADR-0011.
+  handlePowerButton();
+
   // Update battery level periodically
   if (millis() - lastBatteryRead >= BATTERY_READ_INTERVAL) {
     updateBatteryLevel();
     lastBatteryRead = millis();
+  }
+
+  // Device-status heartbeat: re-broadcast our current DeviceState every few seconds while
+  // connected. The firmware does not push status on BLE connect (notifications aren't subscribed
+  // yet at that point), so this lets a reconnecting phone relearn whether we're still calibrated
+  // (STATE_READY) or came back uncalibrated after a reboot (STATE_IDLE). See Android device-state sync.
+  static unsigned long lastStatusHeartbeat = 0;
+  if (Bluefruit.connected() && millis() - lastStatusHeartbeat >= 3000) {
+    lastStatusHeartbeat = millis();
+    updateDeviceStatus();
   }
 
   // Handle FSR reading (always active when connected)
@@ -925,6 +1011,13 @@ void loop() {
   // Handle training loop (time-based mode - deprecated in favor of IMU)
   if (trainingState.deviceState == STATE_TRAINING && trainingConfig.isActive && !strokeDetection.enabled) {
     handleTrainingLoop();
+  }
+
+  // Update LED state indicator (~20ms throttle)
+  static unsigned long lastLedUpdate = 0;
+  if (millis() - lastLedUpdate >= 20) {
+    lastLedUpdate = millis();
+    updateLedState();
   }
 
   // Small delay to prevent tight loop
@@ -1113,102 +1206,71 @@ void playSummaryTone() {
   audioPlayer.playTone(784, 300, 90);
 }
 
+// Simple voice prompts that play a single flash-resident buffer. Beeps (which call a tone routine)
+// and session-summary prompts (which stream from QSPI) are handled separately in playAudioEvent.
+// Adding a new flash prompt is one row here — no new case arm, no risk of a mismatched _SIZE.
+struct FlashPrompt {
+  uint8_t event;
+  const int16_t* data;
+  uint32_t size;
+  const char* label;
+};
+
+static const FlashPrompt FLASH_PROMPTS[] = {
+  { AUDIO_POWER_ON,       audio_prompt_power_on,       audio_prompt_power_on_SIZE,       "power on (Oro)" },
+  { AUDIO_LAST_SET,       audio_prompt_last_set,       audio_prompt_last_set_SIZE,       "last set" },
+  { AUDIO_NEXT_SET_LOW,   audio_prompt_next_set_low,   audio_prompt_next_set_low_SIZE,   "next set low" },
+  { AUDIO_NEXT_SET_MEDIUM,audio_prompt_next_set_medium,audio_prompt_next_set_medium_SIZE,"next set medium" },
+  { AUDIO_NEXT_SET_HIGH,  audio_prompt_next_set_high,  audio_prompt_next_set_high_SIZE,  "next set high" },
+};
+
+// Returns true for any session-summary event (Sync Rating x Power Range grid).
+static bool isSummaryEvent(uint8_t audioEvent) {
+  return audioEvent >= AUDIO_SUMMARY_POOR_LIGHT && audioEvent <= AUDIO_SUMMARY_EXCELLENT_MAXIMUM;
+}
+
 void playAudioEvent(uint8_t audioEvent, uint8_t volume) {
   Serial.print("Audio event: 0x");
-  Serial.print(audioEvent, HEX);
-  Serial.print(" (");
+  Serial.println(audioEvent, HEX);
 
-  // Select audio buffer and size based on event
-  const int16_t* audioData = nullptr;
-  uint32_t audioSize = 0;
+  // Beeps: synthesized tones, not buffers
+  if (audioEvent == AUDIO_SESSION_START_BEEP) {
+    Serial.println("Playing: session start beeps");
+    playSessionStartBeeps();
+    return;
+  }
+  if (audioEvent == AUDIO_SET_CHANGEOVER_BEEP) {
+    Serial.println("Playing: set changeover beep");
+    playSetChangeover();
+    return;
+  }
 
-  switch (audioEvent) {
-    case AUDIO_SESSION_START_BEEP:
-      Serial.println("Playing: session start beeps");
-      playSessionStartBeeps();
-      return;
-
-    case AUDIO_SET_CHANGEOVER_BEEP:
-      Serial.println("Playing: set changeover beep");
-      playSetChangeover();
-      return;
-
-    case AUDIO_POWER_ON:
-      Serial.println("Playing: power on (Oro)");
-      audioData = audio_prompt_power_on;
-      audioSize = audio_prompt_power_on_SIZE;
-      break;
-
-    case AUDIO_LAST_SET:
-      Serial.println("Playing: last set");
-      audioData = audio_prompt_last_set;
-      audioSize = audio_prompt_last_set_SIZE;
-      break;
-
-    case AUDIO_NEXT_SET_LOW:
-      Serial.println("Playing: next set low");
-      audioData = audio_prompt_next_set_low;
-      audioSize = audio_prompt_next_set_low_SIZE;
-      break;
-
-    case AUDIO_NEXT_SET_MEDIUM:
-      Serial.println("Playing: next set medium");
-      audioData = audio_prompt_next_set_medium;
-      audioSize = audio_prompt_next_set_medium_SIZE;
-      break;
-
-    case AUDIO_NEXT_SET_HIGH:
-      Serial.println("Playing: next set high");
-      audioData = audio_prompt_next_set_high;
-      audioSize = audio_prompt_next_set_high_SIZE;
-      break;
-
-    case AUDIO_SUMMARY_POOR_LIGHT:
-    case AUDIO_SUMMARY_POOR_MODERATE:
-    case AUDIO_SUMMARY_POOR_STRONG:
-    case AUDIO_SUMMARY_POOR_MAXIMUM:
-    case AUDIO_SUMMARY_GOOD_LIGHT:
-    case AUDIO_SUMMARY_GOOD_MODERATE:
-    case AUDIO_SUMMARY_GOOD_STRONG:
-    case AUDIO_SUMMARY_GOOD_MAXIMUM:
-    case AUDIO_SUMMARY_EXCELLENT_LIGHT:
-    case AUDIO_SUMMARY_EXCELLENT_MODERATE:
-    case AUDIO_SUMMARY_EXCELLENT_STRONG:
-    case AUDIO_SUMMARY_EXCELLENT_MAXIMUM:
-      Serial.println("Playing: session summary tone");
+  // Session summary: streamed from QSPI, with a chime fallback if the read fails
+  if (isSummaryEvent(audioEvent)) {
+    Serial.print("Playing: session summary voice 0x");
+    Serial.println(audioEvent, HEX);
+    if (externalAudio.playSummary(audioEvent, volume, audioPlayer)) {
+      Serial.println("Summary voice OK");
+    } else {
+      Serial.println("Summary voice failed -- chime fallback");
       playSummaryTone();
-      return;
-
-    default:
-      Serial.println("Unknown audio event ID");
-      return;
+    }
+    return;
   }
 
-  Serial.print(") at volume ");
-  Serial.println(volume);
-
-  // Play voice prompt from flash memory
-  if (audioData != nullptr && audioSize > 0) {
-    // Debug: Print pointer address and first few samples
-    Serial.print("Audio data pointer: 0x");
-    Serial.println((uint32_t)audioData, HEX);
-    Serial.print("Audio size: ");
-    Serial.println(audioSize);
-
-    // Try reading samples directly from different offsets (nRF52 reads flash directly)
-    Serial.print("Direct read test - Sample [0]: ");
-    Serial.println(audioData[0]);
-    Serial.print("Direct read test - Sample [500]: ");
-    Serial.println(audioData[500]);
-    Serial.print("Direct read test - Sample [2000]: ");
-    Serial.println(audioData[2000]);
-    Serial.print("Direct read test - Sample [3600]: ");
-    Serial.println(audioData[3600]);
-
-    audioPlayer.playBuffer(audioData, audioSize, volume);
-  } else {
-    Serial.println("ERROR: No audio data for this event!");
+  // Simple flash-resident prompts
+  for (const FlashPrompt& prompt : FLASH_PROMPTS) {
+    if (prompt.event == audioEvent) {
+      Serial.print("Playing: ");
+      Serial.print(prompt.label);
+      Serial.print(" at volume ");
+      Serial.println(volume);
+      audioPlayer.playBuffer(prompt.data, prompt.size, volume);
+      return;
+    }
   }
+
+  Serial.println("Unknown audio event ID");
 }
 
 // ============================================================================
@@ -1323,8 +1385,9 @@ void onAudioControlWrite(uint16_t conn_hdl, BLECharacteristic* chr, uint8_t* dat
 }
 
 void onZoneSettingsWrite(uint16_t conn_hdl, BLECharacteristic* chr, uint8_t* data, uint16_t len) {
-  // Format: [strokes(2)][sets(1)][spm(2)][zone_color(1)]
-  if (len < 6) {
+  // Format: [strokes(2)][sets(1)][spm(2)][zone_color(1)][role(1)]
+  // role: 0x00 = Follower, 0x01 = Pacer
+  if (len < 7) {
     Serial.println("ERROR: Invalid zone settings data");
     return;
   }
@@ -1333,6 +1396,7 @@ void onZoneSettingsWrite(uint16_t conn_hdl, BLECharacteristic* chr, uint8_t* dat
   trainingConfig.totalSets = data[2];
   trainingConfig.strokesPerMinute = data[3] | (data[4] << 8);
   trainingConfig.zoneColor = data[5];
+  isPacer = (data[6] == 0x01);
   trainingConfig.isActive = true;
 
   Serial.println("=== Zone Settings Received ===");
@@ -1440,27 +1504,170 @@ void sendFsrData() {
   fsrDataChar.notify(data, 4);
 }
 
-void onLedControlWrite(uint16_t conn_hdl, BLECharacteristic* chr, uint8_t* data, uint16_t len) {
-  if (len < 4) return;
+void updateLedState() {
+  uint8_t r = 0, g = 0, b = 0;
+  bool pulsing = false;
+  uint16_t pulsePeriod = 2000;
 
-  uint8_t command = data[0];
-  uint8_t r = data[1];
-  uint8_t g = data[2];
-  uint8_t b = data[3];
-  uint8_t param = (len >= 5) ? data[4] : 0;
+  if (!Bluefruit.connected()) {
+    // Advertising: blue slow pulse
+    b = 255;
+    pulsing = true;
+    pulsePeriod = 2000;
+  } else {
+    switch (trainingState.deviceState) {
+      case STATE_IDLE:
+        b = 255;  // blue solid
+        break;
+      case STATE_READY:
+        g = 255;  // green solid
+        break;
+      case STATE_CALIBRATING:
+        r = 255; g = 150;  // yellow pulse
+        pulsing = true;
+        pulsePeriod = 1000;
+        break;
+      case STATE_TRAINING:
+        if (isPacer) {
+          r = 255; g = 255; b = 255;  // white fast pulse
+        } else {
+          g = 255;  // green fast pulse
+        }
+        pulsing = true;
+        pulsePeriod = 500;
+        break;
+      case STATE_PAUSED:
+        r = 255; g = 150;  // yellow solid
+        break;
+      case STATE_COMPLETE:
+        r = 255; g = 255; b = 255;  // white solid
+        break;
+      case STATE_ERROR:
+      default:
+        r = 255;  // red solid
+        break;
+    }
+  }
 
-  Serial.print("LED control: cmd=0x");
-  Serial.print(command, HEX);
-  Serial.print(" R=");
-  Serial.print(r);
-  Serial.print(" G=");
-  Serial.print(g);
-  Serial.print(" B=");
-  Serial.print(b);
-  Serial.print(" param=");
-  Serial.println(param);
+  if (pulsing) {
+    unsigned long phase = millis() % (unsigned long)pulsePeriod;
+    float brightness;
+    if (phase < pulsePeriod / 2) {
+      brightness = (float)phase / (float)(pulsePeriod / 2);
+    } else {
+      brightness = 1.0f - (float)(phase - pulsePeriod / 2) / (float)(pulsePeriod / 2);
+    }
+    r = (uint8_t)(r * brightness);
+    g = (uint8_t)(g * brightness);
+    b = (uint8_t)(b * brightness);
+  }
 
-  // TODO: Drive actual LED hardware (NeoPixel, etc.) when connected
+  // Power-button hold: linearly fade brightness to 0 over POWER_HOLD_MS. ADR-0011.
+  if (buttonState.holding) {
+    unsigned long held = millis() - buttonState.pressStartMs;
+    float scale = 1.0f - (float)held / (float)POWER_HOLD_MS;
+    if (scale < 0.0f) scale = 0.0f;
+    r = (uint8_t)(r * scale);
+    g = (uint8_t)(g * scale);
+    b = (uint8_t)(b * scale);
+  }
+
+  HwPWM0.writePin(LED_R_PIN, r);
+  HwPWM0.writePin(LED_G_PIN, g);
+  HwPWM0.writePin(LED_B_PIN, b);
+}
+
+// ============================================================================
+// POWER BUTTON — see ADR-0011
+// ============================================================================
+
+void handlePowerButton() {
+  int raw = digitalRead(BUTTON_PIN);
+  unsigned long now = millis();
+
+  // Startup gate: ignore button entirely until we observe at least one HIGH (released) reading.
+  // This prevents stuck-low pin states (wrong pin map, missing switch, wiring fault)
+  // from immediately triggering powerOff at boot.
+  if (buttonState.startupGated) {
+    if (raw == HIGH) {
+      buttonState.startupGated = false;
+      buttonState.lastRawRead = HIGH;
+      Serial.println("Power button startup gate cleared (pin observed HIGH)");
+    }
+    return;
+  }
+
+  // Debounce: only act on a stable change
+  if (raw != buttonState.lastRawRead) {
+    buttonState.lastEdgeMs = now;
+    buttonState.lastRawRead = raw;
+  }
+  if (now - buttonState.lastEdgeMs < BUTTON_DEBOUNCE_MS) {
+    // Still settling — but if already holding, keep checking the timer below
+  }
+
+  // Pressed (active LOW)
+  if (raw == LOW) {
+    if (!buttonState.holding && now - buttonState.lastEdgeMs >= BUTTON_DEBOUNCE_MS) {
+      buttonState.holding = true;
+      buttonState.pressStartMs = now;
+    }
+    if (buttonState.holding && (now - buttonState.pressStartMs) >= POWER_HOLD_MS) {
+      Serial.println("Power button hold reached threshold — calling powerOff()");
+      powerOff();
+      // If we return here, System OFF failed (likely USB-powered or debugger attached).
+      // Log it and leave holding=true so the LED stays dark until release.
+      Serial.println("WARN: powerOff() returned — SoftDevice refused SYSTEM_OFF (USB power?)");
+    }
+  } else {
+    // Released — cancel hold if we hadn't fired
+    if (buttonState.holding) {
+      buttonState.holding = false;
+    }
+  }
+}
+
+void powerOff() {
+  Serial.println("=== Powering OFF (System OFF) ===");
+
+  // Visually confirm shutdown — extinguish LED before sleeping
+  HwPWM0.writePin(LED_R_PIN, 0);
+  HwPWM0.writePin(LED_G_PIN, 0);
+  HwPWM0.writePin(LED_B_PIN, 0);
+
+  // Mute the audio amplifier (D6 LOW = shutdown on MAX98357A)
+  digitalWrite(I2S_SD_PIN, LOW);
+
+  // Stop BLE advertising so the phone sees a clean disconnect
+  Bluefruit.Advertising.stop();
+  if (Bluefruit.connected()) {
+    Bluefruit.disconnect(Bluefruit.connHandle());
+    delay(50);
+  }
+
+  // Wait for the button to be released before arming the wake source.
+  // Otherwise sd_power_system_off() latches and immediately sees the still-LOW pin,
+  // waking the chip back up instantly.
+  Serial.println("Waiting for button release before sleep...");
+  while (digitalRead(BUTTON_PIN) == LOW) {
+    delay(10);
+  }
+  delay(BUTTON_DEBOUNCE_MS);  // Debounce the release
+
+  // Configure D10 / P1.15 as a GPIO sense wake source (active LOW, pullup).
+  // On the next press the chip wakes via reset and setup() runs from the top.
+  // nrf_gpio_cfg_sense_input takes the raw nRF GPIO number, not the Arduino pin.
+  nrf_gpio_cfg_sense_input(BUTTON_PIN_RAW, NRF_GPIO_PIN_PULLUP, NRF_GPIO_PIN_SENSE_LOW);
+
+  // Enter System OFF. This call should not return.
+  sd_power_system_off();
+
+  // Fallback: if the SoftDevice refused (debugger attached, USB VBUS detected),
+  // poke the bare register and halt. On USB power this still won't physically
+  // power-down — the chip will simply spin in WFE — but at least we don't
+  // silently return to the main loop.
+  NRF_POWER->SYSTEMOFF = 1;
+  while (true) { __WFE(); __SEV(); __WFE(); }
 }
 
 // ============================================================================
@@ -1473,9 +1680,18 @@ void handleStrokeDetection() {
   float accelY = imu.readFloatAccelY();
   float accelZ = imu.readFloatAccelZ();
 
-  // Calculate total acceleration magnitude (forward/backward axis - typically Y for rowing)
-  // Using Y-axis as primary stroke direction
-  float strokeAccel = accelY;
+  // Resting-baseline (tare) phase: device is held still, average accelY into
+  // restBaseline, then begin detecting strokes relative to it. No stroke
+  // detection happens until the baseline is set. (ADR-0012)
+  if (calibrationState.taring) {
+    updateTare(accelY);
+    return;
+  }
+
+  // Stroke signal measured as movement relative to the device's resting baseline.
+  // Subtracting restBaseline removes gravity's pull on this axis and the sensor's
+  // per-unit offset, so devices with identical firmware behave consistently. (ADR-0012)
+  float strokeAccel = accelY - strokeDetection.restBaseline;
 
   // Debug: Print raw values every 100ms (roughly every 10 samples at 104Hz)
   static unsigned long lastDebugPrint = 0;
@@ -1602,20 +1818,25 @@ void handleStrokeDetection() {
           }
         }
 
-        // Play zone-patterned haptic for the pacer device
-        uint8_t pattern = PATTERN_STRONG_CLICK;
-        switch (trainingConfig.zoneColor) {
-          case 0x01:
-            pattern = PATTERN_SOFT_CLICK;
-            break;
-          case 0x02:
-            pattern = PATTERN_STRONG_CLICK;
-            break;
-          case 0x03:
-            pattern = PATTERN_DOUBLE_CLICK;
-            break;
+        // Local per-stroke haptic is calibration feedback ONLY. During training the
+        // phone mediates all haptics (ADR-0002) and pulses every device — including the
+        // Pacer — when it receives this Finish event. Buzzing locally here too would make
+        // the Pacer fire twice per stroke while Followers fire once.
+        if (calibrationState.active) {
+          uint8_t pattern = PATTERN_STRONG_CLICK;
+          switch (trainingConfig.zoneColor) {
+            case 0x01:
+              pattern = PATTERN_SOFT_CLICK;
+              break;
+            case 0x02:
+              pattern = PATTERN_STRONG_CLICK;
+              break;
+            case 0x03:
+              pattern = PATTERN_DOUBLE_CLICK;
+              break;
+          }
+          playHapticEffect(pattern, 100);
         }
-        playHapticEffect(pattern, 100);
 
         // Send stroke event
         sendStrokeEvent(STROKE_PHASE_FINISH, currentTime, strokeAccel);
@@ -1722,9 +1943,9 @@ void onCalibrationWrite(uint16_t conn_hdl, BLECharacteristic* chr, uint8_t* data
         Serial.print(strokeDetection.threshold, 2);
         Serial.println("g");
 
-        // Acknowledge
-        uint8_t response[4] = {CAL_CMD_SET_THRESHOLD, data[1], data[2], 0x01};
-        calibrationChar.notify(response, 4);
+        // Acknowledge — padded to 8 bytes to match setFixedLen(8). Trailing bytes are reserved.
+        uint8_t response[8] = {CAL_CMD_SET_THRESHOLD, data[1], data[2], 0x01, 0, 0, 0, 0};
+        calibrationChar.notify(response, 8);
       }
       break;
 
@@ -1736,18 +1957,29 @@ void onCalibrationWrite(uint16_t conn_hdl, BLECharacteristic* chr, uint8_t* data
 
 void startCalibration() {
   Serial.println("=== Starting Calibration ===");
-  Serial.println("Perform 50 strokes at various intensities...");
+  Serial.println("Hold the paddle still — measuring resting baseline...");
 
   calibrationState.active = true;
+
+  // Begin the resting-baseline (tare) window. Stroke counting does not start
+  // until this completes. The paddle must be held still for ~1s. (ADR-0012)
+  calibrationState.taring = true;
+  calibrationState.tareStartMs = millis();
+  calibrationState.tareSum = 0.0;
+  calibrationState.tareSamples = 0;
+  calibrationState.tareMin = 999.0;
+  calibrationState.tareMax = -999.0;
+
   calibrationState.strokeCount = 0;
   calibrationState.maxAccelSeen = -999.0;
   calibrationState.minAccelSeen = 999.0;
 
-  // Lower the threshold for development (hand movements) - change to 0.3g for real strokes in water
-  strokeDetection.threshold = 0.25;  // Moderate sensitivity for deliberate hand movements
+  // Sensitivity used during the 50-stroke phase. Interpreted as movement
+  // relative to restBaseline once the tare completes. (ADR-0012)
+  strokeDetection.threshold = 0.25;  // Moderate sensitivity for deliberate movements
   Serial.print("Calibration threshold set to: ");
   Serial.print(strokeDetection.threshold, 2);
-  Serial.println("g");
+  Serial.println("g (relative to resting baseline)");
 
   trainingState.deviceState = STATE_CALIBRATING;
   updateDeviceStatus();
@@ -1758,9 +1990,56 @@ void startCalibration() {
   sendCalibrationStatus();
 }
 
+// Accumulates accelY samples during the resting-baseline window. When the window
+// elapses, stores the average as restBaseline and moves on to stroke counting —
+// or, if the paddle wasn't held still, rejects the baseline so the coach can
+// retry rather than baking in a bad zero. (ADR-0012)
+void updateTare(float accelY) {
+  calibrationState.tareSum += accelY;
+  calibrationState.tareSamples++;
+  if (accelY < calibrationState.tareMin) calibrationState.tareMin = accelY;
+  if (accelY > calibrationState.tareMax) calibrationState.tareMax = accelY;
+
+  if (millis() - calibrationState.tareStartMs < TARE_DURATION_MS) {
+    return;  // still inside the sampling window
+  }
+
+  float spread = calibrationState.tareMax - calibrationState.tareMin;
+
+  if (calibrationState.tareSamples == 0 || spread > TARE_MAX_SPREAD) {
+    // Paddle was moving — refuse to store a bad zero. Coach re-taps calibrate to retry.
+    Serial.print("Tare REJECTED — readings too jumpy (spread ");
+    Serial.print(spread, 3);
+    Serial.println("g). Hold the paddle still and calibrate again.");
+
+    calibrationState.active = false;
+    calibrationState.taring = false;
+    trainingState.deviceState = STATE_ERROR;
+    updateDeviceStatus();
+
+    playHapticEffect(PATTERN_ALERT_750MS, 100);
+    sendCalibrationStatus();
+    return;
+  }
+
+  strokeDetection.restBaseline = calibrationState.tareSum / calibrationState.tareSamples;
+  calibrationState.taring = false;
+
+  Serial.print("Resting baseline set to ");
+  Serial.print(strokeDetection.restBaseline, 3);
+  Serial.print("g (spread ");
+  Serial.print(spread, 3);
+  Serial.println("g). Now perform 50 strokes at various intensities.");
+
+  // Signal the paddler that stroke counting has begun.
+  playHapticEffect(PATTERN_DOUBLE_CLICK, 80);
+  sendCalibrationStatus();
+}
+
 void stopCalibration() {
   Serial.println("Calibration stopped");
   calibrationState.active = false;
+  calibrationState.taring = false;
 
   // Restore default threshold if calibration was cancelled
   strokeDetection.threshold = STROKE_DETECT_THRESHOLD;
@@ -1768,7 +2047,10 @@ void stopCalibration() {
   Serial.print(strokeDetection.threshold, 2);
   Serial.println("g");
 
-  trainingState.deviceState = STATE_READY;
+  // A cancelled calibration leaves the device uncalibrated (default threshold), so it reports
+  // IDLE, not READY. This keeps STATE_READY meaning "calibrated", which the phone relies on to
+  // restore calibration state after a reconnect (see ADR-0003 / Android device-state sync).
+  trainingState.deviceState = STATE_IDLE;
   updateDeviceStatus();
 
   playHapticEffect(PATTERN_SOFT_CLICK, 60);
@@ -1810,7 +2092,8 @@ void sendCalibrationStatus() {
     return;
   }
 
-  // Format: [command(1) | strokeCount(1) | maxAccel(2) | minAccel(2) | reserved(2)]
+  // Format: [command(1) | strokeCount(1) | maxAccel(2) | minAccel(2) | taring(1) | baselineRejected(1)]
+  // The last two bytes were previously reserved; older app builds ignore them. (ADR-0012)
   uint8_t data[8];
   data[0] = CAL_CMD_GET_STATUS;
   data[1] = calibrationState.strokeCount;
@@ -1823,8 +2106,8 @@ void sendCalibrationStatus() {
   data[3] = (maxAccelInt >> 8) & 0xFF;  // maxAccel high byte
   data[4] = (minAccelInt >> 0) & 0xFF;  // minAccel low byte
   data[5] = (minAccelInt >> 8) & 0xFF;  // minAccel high byte
-  data[6] = 0x00;  // reserved
-  data[7] = 0x00;  // reserved
+  data[6] = calibrationState.taring ? 0x01 : 0x00;  // 1 = capturing resting baseline (hold still)
+  data[7] = (trainingState.deviceState == STATE_ERROR) ? 0x01 : 0x00;  // 1 = baseline rejected, hold still & retry
 
   Serial.print("Sending calibration notification: strokes=");
   Serial.print(calibrationState.strokeCount);
@@ -1834,7 +2117,10 @@ void sendCalibrationStatus() {
   Serial.print(calibrationState.minAccelSeen, 2);
   Serial.println("g");
 
-  calibrationChar.notify(data, 8);
+  bool notifyOk = calibrationChar.notify(data, 8);
+  if (!notifyOk) {
+    Serial.println("WARN: calibrationChar.notify() returned false — subscription not active?");
+  }
 }
 
 // ============================================================================

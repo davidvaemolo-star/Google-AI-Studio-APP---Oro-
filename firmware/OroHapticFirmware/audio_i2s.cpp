@@ -329,6 +329,78 @@ void AudioI2S::playBuffer(const int16_t* buffer, uint32_t sampleCount, uint8_t v
     Serial.println("Buffer playback complete");
 }
 
+bool AudioI2S::playStreamCallback(
+    uint32_t (*fill)(int16_t* dst, uint32_t maxSamples, void* userdata),
+    void* userdata,
+    uint8_t volume) {
+    if (!initialized || fill == nullptr) return false;
+
+    // Clamp volume to 0-100
+    volume = constrain(volume, 0, 100);
+
+    // Volume scaling factor, matching playBuffer exactly.
+    float volumeScale = volume / 100.0f;
+
+    // We sample-double 16 kHz -> 32 kHz: each source int16 sample becomes TWO
+    // identical 32 kHz samples in the I2S buffer.  The I2S is configured for
+    // STEREO mode, so each 32-bit word holds one sample duplicated into both the
+    // high (left) and low (right) 16-bit halves — matching the word packing in
+    // playBuffer exactly.
+    //
+    // Each I2S buffer holds AUDIO_BUFFER_SIZE words.  With doubling, we need
+    // AUDIO_BUFFER_SIZE / 2 source samples to fill it completely (each source
+    // sample expands to 2 words).  AUDIO_BUFFER_SIZE = 256, so srcSamplesPerBuffer
+    // = 128, and 128 * 2 = 256 == AUDIO_BUFFER_SIZE (fits exactly, never overflows).
+    const uint32_t srcSamplesPerBuffer = AUDIO_BUFFER_SIZE / 2;
+
+    int16_t srcBuf[srcSamplesPerBuffer];
+
+    bool firstChunk = true;
+    bool playedAnything = false;
+    uint16_t lastChunkWords = 0;
+
+    playing = true;
+
+    while (true) {
+        uint32_t produced = fill(srcBuf, srcSamplesPerBuffer, userdata);
+        if (produced == 0) break;
+
+        // On subsequent iterations waitForBufferLatch() + swapBuffers() has
+        // already updated currentBuffer to point at the idle buffer.  On the
+        // first iteration currentBuffer still points at audioBuffer0 (set by
+        // begin()), which is correct — mirrors playBuffer's loadChunk pattern.
+        if (!firstChunk) {
+            waitForBufferLatch();
+            swapBuffers();
+        }
+
+        // Fill currentBuffer with sample-doubled, volume-scaled words.
+        // Word packing mirrors playBuffer: sample duplicated into both channels.
+        uint16_t outWords = (uint16_t)(produced * 2);
+        for (uint32_t i = 0; i < produced; i++) {
+            int16_t scaledSample = (int16_t)(srcBuf[i] * volumeScale);
+            uint16_t sampleU16 = (uint16_t)scaledSample;
+            uint32_t word = ((uint32_t)sampleU16 << 16) | sampleU16;  // Both channels
+            currentBuffer[2 * i]     = word;
+            currentBuffer[2 * i + 1] = word;
+        }
+
+        // outWords is already doubled (2 I2S words per source sample); pass as the I2S word count.
+        startTransfer(outWords, firstChunk);
+        firstChunk = false;
+        playedAnything = true;
+        lastChunkWords = outWords;
+    }
+
+    if (playedAnything) {
+        waitForFinalChunk(lastChunkWords);
+        stop();
+    }
+
+    playing = false;
+    return playedAnything;
+}
+
 void AudioI2S::startTransfer(uint16_t sampleCount, bool isFirstChunk) {
     // Set buffer pointer to current buffer
     NRF_I2S->TXD.PTR = (uint32_t)currentBuffer;

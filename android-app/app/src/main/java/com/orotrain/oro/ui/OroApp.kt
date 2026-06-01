@@ -76,15 +76,11 @@ fun OroApp(
                     state = state,
                     onScan = viewModel::startScan,
                     onToggleDevice = viewModel::toggleDeviceConnection,
-                    onReorder = viewModel::reorderConnectedDevices,
-                    isSeatOrderLocked = state.isSeatOrderLocked,
-                    onToggleSeatLock = viewModel::toggleSeatOrderLock,
+                    onSeatChange = { deviceId, seat -> viewModel.assignSeat(deviceId, seat) },
                     onConnectAll = viewModel::connectAllDevices,
                     onStartCalibration = viewModel::startCalibration,
                     onStopCalibration = viewModel::stopCalibration,
-                    onSetThreshold = viewModel::setStrokeThreshold,
-                    onSetLedColor = viewModel::setLedColor,
-                    onSetLedAutoMode = viewModel::setLedAutoMode
+                    onSetThreshold = viewModel::setStrokeThreshold
                 )
 
                 AppDestination.Training -> TrainingScreen(

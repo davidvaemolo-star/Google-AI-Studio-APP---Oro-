@@ -36,6 +36,22 @@
 | Red (+) | BAT+ | Battery positive (3.7V) |
 | Black (-) | BAT- (GND) | Battery negative/ground |
 
+### RGB LED → XIAO nRF52840 Sense Plus
+
+LED part: **Kingbright APFA3010SEKJ3ZGKQBKC** (common-cathode SMD RGB). Common cathode connects to GND; each anode is driven **Active HIGH** by the MCU.
+
+| LED Pad | XIAO Pin | nRF52840 GPIO | Description |
+|---------|----------|---------------|-------------|
+| Pad 1 — Red Anode | D9 (P1.14) | P1.14 | Red channel — Active HIGH |
+| Pad 2 — Common Cathode | GND | — | Shared cathode to GND |
+| Pad 3 — Green Anode | D8 (P1.13) | P1.13 | Green channel — Active HIGH |
+| Pad 4 — Blue Anode | D7 (P1.12) | P1.12 | Blue channel — Active HIGH |
+
+> Add a current-limiting resistor in series with each anode channel:
+> - Red (Vf 2.2V): **51–68 Ω** at 3.3V supply
+> - Green (Vf 3.3V): **0–10 Ω** — supply barely exceeds Vf; green/blue may be dim at 3.3V
+> - Blue (Vf 3.3V): **0–10 Ω** — same constraint as green
+
 ### Optional: MAX98357 I2S Amplifier → XIAO nRF52840
 
 | MAX98357 Pin | XIAO Pin | Description |
@@ -392,6 +408,9 @@ BAT-│   -       GND │
 **★ Active Pins (Current Firmware):**
 - D4 = I2C SDA (DRV2605L)
 - D5 = I2C SCL (DRV2605L)
+- D7 = LED Blue anode (Active HIGH, common-cathode RGB)
+- D8 = LED Green anode (Active HIGH, common-cathode RGB)
+- D9 = LED Red anode (Active HIGH, common-cathode RGB)
 - A0 = Battery monitor (internal)
 - 3.3V = Power out
 - GND = Common ground

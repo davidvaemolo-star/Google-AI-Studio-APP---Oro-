@@ -1,6 +1,11 @@
 # Android
 *.iml
 .gradle
+# Build output (anchored /build only catches the repo root; cover the Android module too)
+build/
+android-app/.gradle/
+android-app/build/
+android-app/app/build/
 /local.properties
 /.idea/caches
 /.idea/libraries
@@ -18,6 +23,11 @@ local.properties
 # Firmware
 *.hex
 *.bin
+# Downloaded ffmpeg toolchain (~270 MB) used to convert voice prompts — not project source
+firmware/ffmpeg-8.0.1/
+firmware/ffmpeg.exe
+firmware/ffprobe.exe
+firmware/boot_log.txt
 
 # Editor directories and files
 .vscode/*
@@ -28,3 +38,10 @@ local.properties
 *.njsproj
 *.sln
 *.sw?
+
+# Local agent/tooling state — not part of the product
+.claude/
+.agents/
+docs/superpowers/
+skills-lock.json
+nul

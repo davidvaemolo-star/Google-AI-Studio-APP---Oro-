@@ -74,6 +74,21 @@ public:
     void playBuffer(const int16_t* buffer, uint32_t sampleCount, uint8_t volume);
 
     /**
+     * Stream audio from a callback at 16 kHz, sample-doubled to 32 kHz I2S.
+     * The callback fills up to `maxSamples` int16 samples into `dst` and
+     * returns how many it produced (0 = end of stream).
+     *
+     * @param fill        Callback that supplies more 16 kHz int16 samples.
+     * @param userdata    Opaque pointer passed back to `fill`.
+     * @param volume      Volume level (0-100).
+     * @return            true if at least one chunk played, false on immediate failure.
+     */
+    bool playStreamCallback(
+        uint32_t (*fill)(int16_t* dst, uint32_t maxSamples, void* userdata),
+        void* userdata,
+        uint8_t volume);
+
+    /**
      * Stop I2S playback and disable peripheral
      */
     void stop();

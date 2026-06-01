@@ -1,6 +1,7 @@
 package com.orotrain.oro.ui.components
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -17,10 +18,16 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.BatteryChargingFull
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -28,6 +35,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.orotrain.oro.model.CalibrationState
 import com.orotrain.oro.model.DeviceStatus
 import com.orotrain.oro.model.HapticDevice
 import com.orotrain.oro.ui.theme.AccentCyan
@@ -43,9 +51,10 @@ fun DeviceCard(
     seatNumber: Int? = null,
     seatRole: String? = null,
     isDragging: Boolean = false,
+    seatCount: Int = 6,
+    onSeatChange: ((Int) -> Unit)? = null,
     onStartCalibration: ((String) -> Unit)? = null,
-    onStopCalibration: ((String) -> Unit)? = null,
-    onShowLedControl: ((String) -> Unit)? = null
+    onStopCalibration: ((String) -> Unit)? = null
 ) {
     val (statusText, buttonLabel, statusColor) = when (device.status) {
         DeviceStatus.Disconnected -> Triple("Disconnected", "Connect", Color.White.copy(alpha = 0.6f))
@@ -71,10 +80,35 @@ fun DeviceCard(
         horizontalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         if (seatNumber != null) {
-            SeatBadge(
-                number = seatNumber,
-                role = seatRole
-            )
+            var dropdownExpanded by remember { mutableStateOf(false) }
+            Box {
+                SeatBadge(
+                    number = seatNumber,
+                    role = seatRole,
+                    modifier = Modifier.clickable(
+                        enabled = onSeatChange != null,
+                        onClickLabel = "Change seat"
+                    ) {
+                        dropdownExpanded = true
+                    }
+                )
+                DropdownMenu(
+                    expanded = dropdownExpanded,
+                    onDismissRequest = { dropdownExpanded = false }
+                ) {
+                    (1..seatCount).forEach { seat ->
+                        DropdownMenuItem(
+                            text = {
+                                Text(if (seat == 1) "Seat 1 · Pacer" else "Seat $seat")
+                            },
+                            onClick = {
+                                onSeatChange?.invoke(seat)
+                                dropdownExpanded = false
+                            }
+                        )
+                    }
+                }
+            }
         }
 
         Column(
@@ -121,7 +155,7 @@ fun DeviceCard(
 
             // Show stroke count and calibration status
             if (device.status == DeviceStatus.Connected) {
-                if (device.isCalibrating) {
+                if (device.calibrationState == CalibrationState.InProgress) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -202,11 +236,11 @@ fun DeviceCard(
                 )
             }
 
-            // Calibration button for Seat 1 (pacer)
-            if (device.status == DeviceStatus.Connected && seatNumber == 1) {
+            // Calibration button for all connected devices
+            if (device.status == DeviceStatus.Connected) {
                 Button(
                     onClick = {
-                        if (device.isCalibrating) {
+                        if (device.calibrationState == CalibrationState.InProgress) {
                             onStopCalibration?.invoke(device.id)
                         } else {
                             onStartCalibration?.invoke(device.id)
@@ -215,36 +249,19 @@ fun DeviceCard(
                     enabled = onStartCalibration != null && onStopCalibration != null,
                     modifier = Modifier,
                     colors = ButtonDefaults.buttonColors(
-                        containerColor = if (device.isCalibrating) Color(0xFFEE5253) else Color(0xFFFFC24B),
+                        containerColor = if (device.calibrationState == CalibrationState.InProgress) Color(0xFFEE5253) else Color(0xFFFFC24B),
                         disabledContainerColor = Color(0xFFFFC24B).copy(alpha = 0.4f)
                     ),
                     contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
                 ) {
                     Text(
-                        text = if (device.isCalibrating) "Stop Cal" else "Calibrate",
+                        text = if (device.calibrationState == CalibrationState.InProgress) "Stop Cal" else "Calibrate",
                         style = MaterialTheme.typography.bodySmall,
                         color = Charcoal
                     )
                 }
             }
 
-            // LED control button for connected devices
-            if (device.status == DeviceStatus.Connected && onShowLedControl != null) {
-                Button(
-                    onClick = { onShowLedControl.invoke(device.id) },
-                    modifier = Modifier,
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = Color(0xFF7B61FF)
-                    ),
-                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
-                ) {
-                    Text(
-                        text = "LED",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = Color.White
-                    )
-                }
-            }
         }
     }
 }

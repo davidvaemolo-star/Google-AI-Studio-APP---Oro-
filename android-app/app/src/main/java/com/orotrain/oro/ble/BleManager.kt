@@ -56,7 +56,6 @@ class BleManager(private val context: Context) {
         val CALIBRATION_UUID = UUID.fromString("12340006-1234-5678-1234-56789abcdef0")
         val AUDIO_CONTROL_UUID = UUID.fromString("12340007-1234-5678-1234-56789abcdef0")
         val FSR_DATA_UUID = UUID.fromString("12340008-1234-5678-1234-56789abcdef0")
-        val LED_CONTROL_UUID = UUID.fromString("12340009-1234-5678-1234-56789abcdef0")
 
         // Standard BLE Battery Service UUIDs
         val BATTERY_SERVICE_UUID = UUID.fromString("0000180F-0000-1000-8000-00805f9b34fb")
@@ -142,11 +141,6 @@ class BleManager(private val context: Context) {
         const val CAL_CMD_SET_THRESHOLD: Byte = 0x03
         const val CAL_CMD_GET_STATUS: Byte = 0x04
 
-        // LED Commands
-        const val LED_CMD_SET_COLOR: Byte = 0x01
-        const val LED_CMD_SET_PATTERN: Byte = 0x02
-        const val LED_CMD_SET_BRIGHTNESS: Byte = 0x03
-        const val LED_CMD_AUTO_MODE: Byte = 0x04
     }
 
     private val bluetoothManager: BluetoothManager =
@@ -187,7 +181,9 @@ class BleManager(private val context: Context) {
         val maxAccel: Float,
         val minAccel: Float,
         val suggestedThreshold: Float,
-        val isComplete: Boolean
+        val isComplete: Boolean,
+        val isCapturingBaseline: Boolean = false,  // firmware is in the resting-baseline (tare) window; hold still (ADR-0012)
+        val baselineRejected: Boolean = false       // baseline rejected because the paddle wasn't still; retry (ADR-0012)
     )
 
     private val _strokeEvents = MutableStateFlow<StrokeEvent?>(null)
@@ -199,6 +195,13 @@ class BleManager(private val context: Context) {
     data class FsrUpdate(val deviceId: String, val forcePercent: Int, val rawAdc: Int, val topHandPressureThresholdTriggered: Boolean)
     private val _fsrUpdates = MutableStateFlow<FsrUpdate?>(null)
     val fsrUpdates: StateFlow<FsrUpdate?> = _fsrUpdates.asStateFlow()
+
+    // Raw firmware DeviceState byte (STATE_IDLE/READY/CALIBRATING/...) reported via the Device
+    // Status characteristic. The ViewModel uses this to resync calibration state after a reconnect,
+    // so a Bluetooth blip no longer wipes a completed calibration. See ADR-0003 / device-state sync.
+    data class DeviceStateUpdate(val deviceId: String, val firmwareState: Int)
+    private val _deviceStateUpdates = MutableStateFlow<DeviceStateUpdate?>(null)
+    val deviceStateUpdates: StateFlow<DeviceStateUpdate?> = _deviceStateUpdates.asStateFlow()
 
     private val deviceGattMap = ConcurrentHashMap<String, BluetoothGatt>()
     private val deviceStatusMap = ConcurrentHashMap<String, DeviceStatus>()
@@ -425,6 +428,90 @@ class BleManager(private val context: Context) {
         Log.d(TAG, "Disconnected from device: $deviceId")
     }
 
+    // GATT operations must be serialized: Android's BluetoothGatt only supports one in-flight
+    // operation at a time across ALL characteristics and descriptors. Firing writes back-to-back
+    // (e.g., 5 CCCD subscribes in onServicesDiscovered, or configureZone+startTraining at session
+    // start) causes all but the first to be silently dropped. Symptom: notifications never arrive,
+    // or commands like CMD_START_TRAINING never reach firmware.
+    //
+    // Single unified queue per device, drained by either onDescriptorWrite or onCharacteristicWrite.
+    private sealed class PendingGattOp {
+        abstract val label: String
+        data class DescriptorWrite(
+            val descriptor: BluetoothGattDescriptor,
+            val value: ByteArray,
+            override val label: String
+        ) : PendingGattOp()
+        data class CharacteristicWrite(
+            val characteristic: BluetoothGattCharacteristic,
+            val value: ByteArray,
+            val writeType: Int,
+            override val label: String
+        ) : PendingGattOp()
+    }
+    private val gattOpQueues = mutableMapOf<String, ArrayDeque<PendingGattOp>>()
+    private val gattOpInFlight = mutableMapOf<String, Boolean>()
+
+    private fun enqueueDescriptorWrite(
+        gatt: BluetoothGatt,
+        descriptor: BluetoothGattDescriptor?,
+        value: ByteArray,
+        label: String
+    ) {
+        if (descriptor == null) {
+            Log.w(TAG, "  ✗ Cannot enqueue CCCD write [$label]: descriptor is null")
+            return
+        }
+        enqueueGattOp(gatt, PendingGattOp.DescriptorWrite(descriptor, value, label))
+    }
+
+    private fun enqueueCharacteristicWrite(
+        gatt: BluetoothGatt,
+        characteristic: BluetoothGattCharacteristic,
+        value: ByteArray,
+        writeType: Int,
+        label: String
+    ): Boolean {
+        enqueueGattOp(gatt, PendingGattOp.CharacteristicWrite(characteristic, value, writeType, label))
+        return true
+    }
+
+    private fun enqueueGattOp(gatt: BluetoothGatt, op: PendingGattOp) {
+        val deviceId = gatt.device.address
+        synchronized(gattOpQueues) {
+            val queue = gattOpQueues.getOrPut(deviceId) { ArrayDeque() }
+            queue.addLast(op)
+            if (gattOpInFlight[deviceId] != true) {
+                drainGattOpQueue(gatt)
+            }
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun drainGattOpQueue(gatt: BluetoothGatt) {
+        val deviceId = gatt.device.address
+        synchronized(gattOpQueues) {
+            val queue = gattOpQueues[deviceId] ?: return
+            val next = queue.removeFirstOrNull()
+            if (next == null) {
+                gattOpInFlight[deviceId] = false
+                return
+            }
+            gattOpInFlight[deviceId] = true
+            val ok = when (next) {
+                is PendingGattOp.DescriptorWrite ->
+                    writeDescriptorCompat(gatt, next.descriptor, next.value)
+                is PendingGattOp.CharacteristicWrite ->
+                    writeCharacteristicCompat(gatt, next.characteristic, next.value, next.writeType)
+            }
+            if (!ok) {
+                Log.w(TAG, "  ✗ GATT op [${next.label}] failed to queue for $deviceId")
+                gattOpInFlight[deviceId] = false
+                drainGattOpQueue(gatt)
+            }
+        }
+    }
+
     private val gattCallback = object : BluetoothGattCallback() {
         @SuppressLint("MissingPermission")
         override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
@@ -475,6 +562,12 @@ class BleManager(private val context: Context) {
 
                     deviceGattMap.remove(deviceId)
                     deviceStatusMap.remove(deviceId)
+
+                    // Clear any pending GATT ops so a fresh reconnect starts clean
+                    synchronized(gattOpQueues) {
+                        gattOpQueues.remove(deviceId)
+                        gattOpInFlight.remove(deviceId)
+                    }
 
                     try {
                         gatt.close()
@@ -554,7 +647,7 @@ class BleManager(private val context: Context) {
                 if (deviceStatusChar != null) {
                     gatt.setCharacteristicNotification(deviceStatusChar, true)
                     val descriptor = deviceStatusChar.getDescriptor(CLIENT_CHARACTERISTIC_CONFIG_UUID)
-                    writeDescriptorCompat(gatt, descriptor, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)
+                    enqueueDescriptorWrite(gatt, descriptor, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE, "device-status")
                     Log.d(TAG, "  ✓ Device Status characteristic enabled for $deviceId")
                 } else {
                     Log.w(TAG, "  ✗ Device Status characteristic NOT FOUND for $deviceId")
@@ -574,7 +667,7 @@ class BleManager(private val context: Context) {
                     if (strokeEventChar != null) {
                         gatt.setCharacteristicNotification(strokeEventChar, true)
                         val descriptor = strokeEventChar.getDescriptor(CLIENT_CHARACTERISTIC_CONFIG_UUID)
-                        writeDescriptorCompat(gatt, descriptor, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)
+                        enqueueDescriptorWrite(gatt, descriptor, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE, "stroke-event")
                         Log.d(TAG, "  ✓ Enabled stroke event notifications for pacer: ${gatt.device.address}")
                     } else {
                         Log.w(TAG, "  ✗ Stroke Event characteristic NOT FOUND for pacer: ${gatt.device.address}")
@@ -586,7 +679,7 @@ class BleManager(private val context: Context) {
                 if (calibrationChar != null) {
                     gatt.setCharacteristicNotification(calibrationChar, true)
                     val descriptor = calibrationChar.getDescriptor(CLIENT_CHARACTERISTIC_CONFIG_UUID)
-                    writeDescriptorCompat(gatt, descriptor, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)
+                    enqueueDescriptorWrite(gatt, descriptor, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE, "calibration")
                     Log.d(TAG, "  ✓ Calibration notifications enabled for $deviceId")
                 } else {
                     Log.w(TAG, "  ✗ Calibration characteristic NOT FOUND for $deviceId")
@@ -597,18 +690,10 @@ class BleManager(private val context: Context) {
                 if (fsrDataChar != null) {
                     gatt.setCharacteristicNotification(fsrDataChar, true)
                     val descriptor = fsrDataChar.getDescriptor(CLIENT_CHARACTERISTIC_CONFIG_UUID)
-                    writeDescriptorCompat(gatt, descriptor, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)
+                    enqueueDescriptorWrite(gatt, descriptor, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE, "fsr-data")
                     Log.d(TAG, "  ✓ FSR data notifications enabled for $deviceId")
                 } else {
                     Log.w(TAG, "  ✗ FSR Data characteristic NOT FOUND for $deviceId")
-                }
-
-                // Verify LED Control characteristic is available
-                val ledControlChar = hapticService.getCharacteristic(LED_CONTROL_UUID)
-                if (ledControlChar != null) {
-                    Log.d(TAG, "  ✓ LED Control characteristic FOUND for $deviceId")
-                } else {
-                    Log.w(TAG, "  ✗ LED Control characteristic NOT FOUND for $deviceId")
                 }
 
                 // Read battery level
@@ -619,7 +704,7 @@ class BleManager(private val context: Context) {
                     // Enable battery notifications
                     gatt.setCharacteristicNotification(batteryChar, true)
                     val descriptor = batteryChar.getDescriptor(CLIENT_CHARACTERISTIC_CONFIG_UUID)
-                    writeDescriptorCompat(gatt, descriptor, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)
+                    enqueueDescriptorWrite(gatt, descriptor, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE, "battery-level")
                 } else {
                     // Fallback: Set default battery level if Battery Service not available
                     // This allows testing when devices don't have the standard battery service
@@ -669,6 +754,36 @@ class BleManager(private val context: Context) {
             value: ByteArray
         ) {
             handleCharacteristicChanged(gatt, characteristic, value)
+        }
+
+        override fun onDescriptorWrite(
+            gatt: BluetoothGatt,
+            descriptor: BluetoothGattDescriptor,
+            status: Int
+        ) {
+            val deviceId = gatt.device.address
+            if (status != BluetoothGatt.GATT_SUCCESS) {
+                Log.w(TAG, "  ✗ CCCD write failed for $deviceId (status=$status, uuid=${descriptor.characteristic.uuid})")
+            }
+            synchronized(gattOpQueues) {
+                gattOpInFlight[deviceId] = false
+            }
+            drainGattOpQueue(gatt)
+        }
+
+        override fun onCharacteristicWrite(
+            gatt: BluetoothGatt,
+            characteristic: BluetoothGattCharacteristic,
+            status: Int
+        ) {
+            val deviceId = gatt.device.address
+            if (status != BluetoothGatt.GATT_SUCCESS) {
+                Log.w(TAG, "  ✗ Characteristic write failed for $deviceId (status=$status, uuid=${characteristic.uuid})")
+            }
+            synchronized(gattOpQueues) {
+                gattOpInFlight[deviceId] = false
+            }
+            drainGattOpQueue(gatt)
         }
     }
 
@@ -753,6 +868,9 @@ class BleManager(private val context: Context) {
                         DeviceStatus.Connected,
                         batteryLevel = frame.batteryLevel
                     )
+                    // Surface the firmware's own state so the ViewModel can resync calibration
+                    // across reconnects (ADR-0003 / device-state sync).
+                    _deviceStateUpdates.value = DeviceStateUpdate(deviceId, frame.state.toInt() and 0xFF)
                 } else {
                     Log.w(TAG, "Malformed device status payload from ${gatt.device.address}: ${value.size} bytes")
                 }
@@ -786,7 +904,7 @@ class BleManager(private val context: Context) {
                 Log.d(TAG, "Calibration notification received from ${gatt.device.address}, size=${value.size}")
 
                 // Parse calibration status frame
-                // Format: [command(1) | strokeCount(1) | maxAccel(2) | minAccel(2) | reserved(2)]
+                // Format: [command(1) | strokeCount(1) | maxAccel(2) | minAccel(2) | taring(1) | baselineRejected(1)]
                 if (value.size >= 4) {
                     val command = value[0]
                     val strokeCount = value[1].toInt() and 0xFF
@@ -802,6 +920,9 @@ class BleManager(private val context: Context) {
                         val minAccel = minAccelInt.toShort() / 100.0f
                         val suggestedThreshold = maxAccel * 0.55f  // 55% of max
                         val isComplete = strokeCount >= 50
+                        // Bytes 6–7 added in ADR-0012; older firmware sent 0 here.
+                        val isCapturingBaseline = value[6].toInt() != 0
+                        val baselineRejected = value[7].toInt() != 0
 
                         val calibrationUpdate = CalibrationUpdate(
                             deviceId = gatt.device.address,
@@ -809,7 +930,9 @@ class BleManager(private val context: Context) {
                             maxAccel = maxAccel,
                             minAccel = minAccel,
                             suggestedThreshold = suggestedThreshold,
-                            isComplete = isComplete
+                            isComplete = isComplete,
+                            isCapturingBaseline = isCapturingBaseline,
+                            baselineRejected = baselineRejected
                         )
 
                         _calibrationUpdates.value = calibrationUpdate
@@ -947,27 +1070,30 @@ class BleManager(private val context: Context) {
     // Haptic control functions
 
     @SuppressLint("MissingPermission")
-    fun configureTrainingZone(deviceId: String, strokes: Int, sets: Int, spm: Int, zoneColor: Byte = ZONE_ENDURANCE): Boolean {
+    fun configureTrainingZone(deviceId: String, strokes: Int, sets: Int, spm: Int, zoneColor: Byte = ZONE_ENDURANCE, isPacer: Boolean = false): Boolean {
         if (!hasRequiredPermissions()) return false
 
         val gatt = deviceGattMap[deviceId] ?: return false
         val hapticService = gatt.getService(ORO_HAPTIC_SERVICE_UUID) ?: return false
         val zoneSettingsChar = hapticService.getCharacteristic(ZONE_SETTINGS_UUID) ?: return false
 
-        // Format: [strokes LSB, strokes MSB, sets, SPM LSB, SPM MSB, zone color]
-        val data = ByteBuffer.allocate(6).apply {
+        // Format: [strokes LSB, strokes MSB, sets, SPM LSB, SPM MSB, zone color, role]
+        // role: 0x00 = Follower, 0x01 = Pacer
+        val data = ByteBuffer.allocate(7).apply {
             order(ByteOrder.LITTLE_ENDIAN)
             putShort(strokes.toShort())
             put(sets.toByte())
             putShort(spm.toShort())
             put(zoneColor)
+            put(if (isPacer) 0x01.toByte() else 0x00.toByte())
         }.array()
 
-        val result = writeCharacteristicCompat(
+        val result = enqueueCharacteristicWrite(
             gatt,
             zoneSettingsChar,
             data,
-            BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
+            BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT,
+            "zone-settings"
         )
         Log.d(TAG, "Configure zone for $deviceId: strokes=$strokes, sets=$sets, spm=$spm, result=$result")
         return result
@@ -1071,11 +1197,12 @@ class BleManager(private val context: Context) {
                 pattern
             )
 
-            val result = writeCharacteristicCompat(
+            val result = enqueueCharacteristicWrite(
                 gatt,
                 hapticControlChar,
                 data,
-                hapticControlChar.writeType
+                hapticControlChar.writeType,
+                "haptic-cmd-0x${"%02X".format(command)}"
             )
             if (!result) {
                 Log.w(TAG, "Haptic command write failed for $deviceId (cmd=$command)")
@@ -1113,9 +1240,22 @@ class BleManager(private val context: Context) {
 
         gatt.setCharacteristicNotification(strokeEventChar, true)
         val descriptor = strokeEventChar.getDescriptor(CLIENT_CHARACTERISTIC_CONFIG_UUID)
-        writeDescriptorCompat(gatt, descriptor, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)
+        enqueueDescriptorWrite(gatt, descriptor, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE, "stroke-event-late")
 
         Log.d(TAG, "Enabled stroke event notifications for: ${gatt.device.address}")
+    }
+
+    /**
+     * Subscribe to stroke-event notifications on every connected device, so the phone hears all
+     * Catches — not just the pacer's — for Sync Score measurement. Every device already detects
+     * strokes in firmware; this just opens the notification channel. Called at session start. (ADR-0015)
+     */
+    fun enableStrokeNotificationsForAllConnected() {
+        deviceGattMap.forEach { (deviceId, gatt) ->
+            if (deviceStatusMap[deviceId] == DeviceStatus.Connected) {
+                enableStrokeNotifications(gatt)
+            }
+        }
     }
 
     fun enableStrokeDetection(deviceId: String): Boolean {
@@ -1127,19 +1267,23 @@ class BleManager(private val context: Context) {
         return stopTraining(deviceId)
     }
 
-    fun broadcastHaptic(
-        command: Byte = CMD_SINGLE_PULSE,
-        pattern: Byte = PATTERN_STRONG_CLICK,
-        intensity: Int = 100,
-        includePacer: Boolean = false
+    /**
+     * Sends a command to every eligible connected device, returning attempted/succeeded counts.
+     *
+     * A device is eligible when it is connected, ready, and either [includePacer] is true or it
+     * is not the pacer. This is the single place the broadcast eligibility rule lives. [send]
+     * performs the per-device write and reports whether it succeeded.
+     */
+    private fun broadcast(
+        label: String,
+        includePacer: Boolean,
+        send: (deviceId: String) -> Boolean
     ): BroadcastResult {
         var attempted = 0
         var succeeded = 0
 
-        Log.d(TAG, "=== broadcastHaptic START ===")
-        Log.d(TAG, "  Command: 0x${String.format("%02X", command)}, Pattern: $pattern, Intensity: $intensity, includePacer: $includePacer")
-        Log.d(TAG, "  Total devices in deviceGattMap: ${deviceGattMap.size}")
-        Log.d(TAG, "  Pacer device ID: $pacerDeviceId")
+        Log.d(TAG, "=== $label START ===")
+        Log.d(TAG, "  includePacer: $includePacer, totalDevices: ${deviceGattMap.size}, pacer: $pacerDeviceId")
 
         deviceGattMap.keys.forEach { deviceId ->
             val isPacer = deviceId == pacerDeviceId
@@ -1151,13 +1295,7 @@ class BleManager(private val context: Context) {
 
             if (shouldSend) {
                 attempted++
-                val result = sendHapticCommand(
-                    deviceId,
-                    command,
-                    intensity = intensity,
-                    pattern = pattern
-                )
-                if (result) {
+                if (send(deviceId)) {
                     succeeded++
                     Log.d(TAG, "    ✓ SUCCESS sending to $deviceId")
                 } else {
@@ -1166,16 +1304,26 @@ class BleManager(private val context: Context) {
             }
         }
 
-        if (attempted == 0) {
-            Log.w(TAG, "broadcastHaptic: NO ELIGIBLE DEVICES (includePacer=$includePacer, totalDevices=${deviceGattMap.size})")
-        } else if (succeeded != attempted) {
-            Log.w(TAG, "broadcastHaptic PARTIAL SUCCESS: $succeeded / $attempted succeeded")
-        } else {
-            Log.d(TAG, "broadcastHaptic COMPLETE SUCCESS: $succeeded / $attempted devices")
+        when {
+            attempted == 0 -> Log.w(TAG, "$label: NO ELIGIBLE DEVICES (includePacer=$includePacer, totalDevices=${deviceGattMap.size})")
+            succeeded != attempted -> Log.w(TAG, "$label PARTIAL SUCCESS: $succeeded / $attempted succeeded")
+            else -> Log.d(TAG, "$label COMPLETE SUCCESS: $succeeded / $attempted devices")
         }
-        Log.d(TAG, "=== broadcastHaptic END ===")
+        Log.d(TAG, "=== $label END ===")
 
         return BroadcastResult(attempted, succeeded)
+    }
+
+    fun broadcastHaptic(
+        command: Byte = CMD_SINGLE_PULSE,
+        pattern: Byte = PATTERN_STRONG_CLICK,
+        intensity: Int = 100,
+        includePacer: Boolean = false
+    ): BroadcastResult {
+        Log.d(TAG, "broadcastHaptic: command=0x${String.format("%02X", command)}, pattern=$pattern, intensity=$intensity")
+        return broadcast("broadcastHaptic", includePacer) { deviceId ->
+            sendHapticCommand(deviceId, command, intensity = intensity, pattern = pattern)
+        }
     }
 
     fun broadcastAudio(
@@ -1183,44 +1331,10 @@ class BleManager(private val context: Context) {
         volume: Int = 80,
         includePacer: Boolean = true
     ): BroadcastResult {
-        var attempted = 0
-        var succeeded = 0
-
-        Log.d(TAG, "=== broadcastAudio START ===")
-        Log.d(TAG, "  Audio Event: 0x${String.format("%02X", audioEvent)}, Volume: $volume, includePacer: $includePacer")
-        Log.d(TAG, "  Total devices in deviceGattMap: ${deviceGattMap.size}")
-        Log.d(TAG, "  Pacer device ID: $pacerDeviceId")
-
-        deviceGattMap.keys.forEach { deviceId ->
-            val isPacer = deviceId == pacerDeviceId
-            val isConnected = deviceStatusMap[deviceId] == DeviceStatus.Connected
-            val isReady = deviceReadyMap[deviceId] == true
-            val shouldSend = isConnected && isReady && (includePacer || !isPacer)
-
-            Log.d(TAG, "  Device $deviceId: isPacer=$isPacer, connected=$isConnected, ready=$isReady, shouldSend=$shouldSend")
-
-            if (shouldSend) {
-                attempted++
-                val result = sendAudioCommand(deviceId, audioEvent, volume)
-                if (result) {
-                    succeeded++
-                    Log.d(TAG, "    ✓ SUCCESS sending audio to $deviceId")
-                } else {
-                    Log.w(TAG, "    ✗ FAILED sending audio to $deviceId")
-                }
-            }
+        Log.d(TAG, "broadcastAudio: event=0x${String.format("%02X", audioEvent)}, volume=$volume")
+        return broadcast("broadcastAudio", includePacer) { deviceId ->
+            sendAudioCommand(deviceId, audioEvent, volume)
         }
-
-        if (attempted == 0) {
-            Log.w(TAG, "broadcastAudio: NO ELIGIBLE DEVICES (includePacer=$includePacer, totalDevices=${deviceGattMap.size})")
-        } else if (succeeded != attempted) {
-            Log.w(TAG, "broadcastAudio PARTIAL SUCCESS: $succeeded / $attempted succeeded")
-        } else {
-            Log.d(TAG, "broadcastAudio COMPLETE SUCCESS: $succeeded / $attempted devices")
-        }
-        Log.d(TAG, "=== broadcastAudio END ===")
-
-        return BroadcastResult(attempted, succeeded)
     }
 
     @SuppressLint("MissingPermission")
@@ -1249,65 +1363,12 @@ class BleManager(private val context: Context) {
         val clampedVolume = volume.coerceIn(0, 100)
 
         val data = byteArrayOf(audioEvent, clampedVolume.toByte())
-        val result = writeCharacteristicCompat(gatt, audioChar, data, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT)
+        val result = enqueueCharacteristicWrite(gatt, audioChar, data, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT, "audio-event-0x${"%02X".format(audioEvent)}")
 
         if (result) {
             Log.d(TAG, "Audio command sent successfully to $deviceId: event=0x${String.format("%02X", audioEvent)}, volume=$clampedVolume")
         } else {
             Log.w(TAG, "Audio command write failed for $deviceId")
-        }
-
-        return result
-    }
-
-    // LED control functions
-
-    @SuppressLint("MissingPermission")
-    fun sendLedColor(deviceId: String, r: Int, g: Int, b: Int): Boolean {
-        return sendLedCommand(deviceId, LED_CMD_SET_COLOR, r.toByte(), g.toByte(), b.toByte(), 0)
-    }
-
-    @SuppressLint("MissingPermission")
-    fun sendLedPattern(deviceId: String, pattern: Int): Boolean {
-        return sendLedCommand(deviceId, LED_CMD_SET_PATTERN, 0, 0, 0, pattern.toByte())
-    }
-
-    @SuppressLint("MissingPermission")
-    fun sendLedBrightness(deviceId: String, brightness: Int): Boolean {
-        return sendLedCommand(deviceId, LED_CMD_SET_BRIGHTNESS, 0, 0, 0, brightness.toByte())
-    }
-
-    @SuppressLint("MissingPermission")
-    fun sendLedAutoMode(deviceId: String): Boolean {
-        return sendLedCommand(deviceId, LED_CMD_AUTO_MODE, 0, 0, 0, 0)
-    }
-
-    @SuppressLint("MissingPermission")
-    private fun sendLedCommand(deviceId: String, command: Byte, r: Byte, g: Byte, b: Byte, param: Byte): Boolean {
-        if (!hasRequiredPermissions()) return false
-
-        val gatt = deviceGattMap[deviceId] ?: run {
-            Log.w(TAG, "sendLedCommand failed for $deviceId: GATT connection not found")
-            return false
-        }
-
-        val hapticService = gatt.getService(ORO_HAPTIC_SERVICE_UUID) ?: run {
-            Log.w(TAG, "sendLedCommand failed for $deviceId: Oro Haptic Service not found")
-            return false
-        }
-
-        val ledChar = hapticService.getCharacteristic(LED_CONTROL_UUID) ?: run {
-            Log.w(TAG, "sendLedCommand failed for $deviceId: LED Control characteristic not found")
-            return false
-        }
-
-        val data = byteArrayOf(command, r, g, b, param)
-        val result = writeCharacteristicCompat(gatt, ledChar, data, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT)
-
-        if (result) {
-            Log.d(TAG, "LED command sent to $deviceId: cmd=$command, r=$r, g=$g, b=$b, param=$param")
-        } else {
-            Log.w(TAG, "LED command write failed for $deviceId")
         }
 
         return result
@@ -1324,11 +1385,12 @@ class BleManager(private val context: Context) {
         val calibrationChar = hapticService.getCharacteristic(CALIBRATION_UUID) ?: return false
 
         val data = byteArrayOf(CAL_CMD_START)
-        val result = writeCharacteristicCompat(
+        val result = enqueueCharacteristicWrite(
             gatt,
             calibrationChar,
             data,
-            BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
+            BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT,
+            "cal-start"
         )
         Log.d(TAG, "Start calibration for $deviceId: $result")
         return result
@@ -1343,11 +1405,12 @@ class BleManager(private val context: Context) {
         val calibrationChar = hapticService.getCharacteristic(CALIBRATION_UUID) ?: return false
 
         val data = byteArrayOf(CAL_CMD_STOP)
-        val result = writeCharacteristicCompat(
+        val result = enqueueCharacteristicWrite(
             gatt,
             calibrationChar,
             data,
-            BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
+            BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT,
+            "cal-stop"
         )
         Log.d(TAG, "Stop calibration for $deviceId: $result")
         return result
@@ -1369,11 +1432,12 @@ class BleManager(private val context: Context) {
             ((thresholdInt.toInt() shr 8) and 0xFF).toByte()
         )
 
-        val result = writeCharacteristicCompat(
+        val result = enqueueCharacteristicWrite(
             gatt,
             calibrationChar,
             data,
-            BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
+            BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT,
+            "cal-set-threshold"
         )
         Log.d(TAG, "Set stroke threshold for $deviceId to $threshold: $result")
         return result
