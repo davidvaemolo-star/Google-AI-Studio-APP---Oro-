@@ -1103,6 +1103,7 @@ class MainViewModel(
 
     fun stopTrainingSession() {
         speedProvider?.stop()
+        _uiState.update { it.copy(canoeSpeedKmh = null) }   // clear the coach speed indicator (ADR-0018)
         val state = _uiState.value
         if (!state.trainingSession.isActive) return
         synchronized(syncLock) {
