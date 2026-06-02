@@ -91,7 +91,8 @@ class BleManager(private val context: Context) {
         // Audio Events
         // Tones (firmware-generated)
         const val AUDIO_POWER_ON: Byte            = 0x01
-        const val AUDIO_SESSION_START_BEEP: Byte  = 0x02
+        // 0x02 was the Countdown (AUDIO_SESSION_START_BEEP) — RETIRED (ADR-0017). The session now
+        // begins on the Pacer's first Catch, announced by AUDIO_STANDBY. ID reserved; do not reuse.
         const val AUDIO_SET_CHANGEOVER_BEEP: Byte = 0x03
 
         // Zone voice prompts
@@ -99,6 +100,11 @@ class BleManager(private val context: Context) {
         const val AUDIO_NEXT_SET_LOW: Byte        = 0x05
         const val AUDIO_NEXT_SET_MEDIUM: Byte     = 0x06
         const val AUDIO_NEXT_SET_HIGH: Byte       = 0x07
+
+        // Session start/end voice prompts (ADR-0017)
+        const val AUDIO_STANDBY: Byte             = 0x14  // "stand by" — armed, awaiting Pacer's first Catch
+        const val AUDIO_SESSION_COMPLETE: Byte    = 0x15  // "session complete" — at session end
+        const val AUDIO_STANDBY_FOR_RESULTS: Byte = 0x16  // "stand by for results" — before the Crew Roll-Call
 
         // Session summary (RETIRED — ADR-0016, replaced by the Crew Roll-Call; IDs reserved, do not reuse)
         // Session summary: Poor sync

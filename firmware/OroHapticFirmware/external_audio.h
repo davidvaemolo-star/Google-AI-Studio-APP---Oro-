@@ -14,7 +14,7 @@
 
 #include <Arduino.h>
 
-#define EXT_AUDIO_MAX_PROMPTS 24  // holds the 20 Crew Roll-Call clips (ADR-0016) with headroom
+#define EXT_AUDIO_MAX_PROMPTS 28  // 20 Crew Roll-Call clips (ADR-0016) + 3 session prompts (ADR-0017) + headroom
 
 class AudioI2S;  // forward decl
 

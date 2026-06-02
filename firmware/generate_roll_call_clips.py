@@ -50,6 +50,11 @@ CLIPS = [
     ("rc_seat_6",          "seat six"),
     ("rc_canoe_1",         "canoe one"),
     ("rc_canoe_2",         "canoe two"),
+    # Session start/end voice prompts (ADR-0017). Played directly by audio-event id (see
+    # build_audio_blob.py), not stitched into the roll-call, but packed in the same QSPI blob.
+    ("session_standby",              "stand by"),
+    ("session_complete",             "session complete"),
+    ("session_standby_for_results",  "stand by for results"),
 ]
 
 

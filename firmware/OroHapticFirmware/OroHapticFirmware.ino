@@ -297,7 +297,13 @@ enum AudioEvent {
   AUDIO_SUMMARY_EXCELLENT_LIGHT     = 0x10,
   AUDIO_SUMMARY_EXCELLENT_MODERATE  = 0x11,
   AUDIO_SUMMARY_EXCELLENT_STRONG    = 0x12,
-  AUDIO_SUMMARY_EXCELLENT_MAXIMUM   = 0x13
+  AUDIO_SUMMARY_EXCELLENT_MAXIMUM   = 0x13,
+
+  // Session start/end voice prompts (ADR-0017). Streamed from external QSPI like the roll-call
+  // clips; if the blob isn't flashed they fall back to a tone. (0x02 Countdown is retired.)
+  AUDIO_STANDBY             = 0x14,  // "stand by" — armed, awaiting the Pacer's first Catch
+  AUDIO_SESSION_COMPLETE    = 0x15,  // "session complete" — at session end
+  AUDIO_STANDBY_FOR_RESULTS = 0x16   // "stand by for results" — before the Crew Roll-Call
 };
 
 // Training Configuration
@@ -1323,6 +1329,20 @@ void playAudioEvent(uint8_t audioEvent, uint8_t volume) {
   if (audioEvent == AUDIO_SET_CHANGEOVER_BEEP) {
     Serial.println("Playing: set changeover beep");
     playSetChangeover();
+    return;
+  }
+
+  // Session start/end voice prompts (ADR-0017): streamed from QSPI like the roll-call clips, with a
+  // tone fallback if the blob isn't flashed.
+  if (audioEvent == AUDIO_STANDBY ||
+      audioEvent == AUDIO_SESSION_COMPLETE ||
+      audioEvent == AUDIO_STANDBY_FOR_RESULTS) {
+    Serial.print("Playing: session voice 0x");
+    Serial.println(audioEvent, HEX);
+    if (!externalAudio.playClip(audioEvent, volume, audioPlayer)) {
+      Serial.println("Session voice failed -- tone fallback");
+      audioPlayer.playTone(880, 200, volume);  // blob not flashed → beep
+    }
     return;
   }
 
