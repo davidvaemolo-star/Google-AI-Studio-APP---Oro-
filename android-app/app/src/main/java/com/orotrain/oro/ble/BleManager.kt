@@ -58,9 +58,13 @@ class BleManager(private val context: Context) {
         val FSR_DATA_UUID = UUID.fromString("12340008-1234-5678-1234-56789abcdef0")
         // 12340009 reserved (LED control removed — ADR-0009)
         val ROLLCALL_CONTROL_UUID = UUID.fromString("1234000A-1234-5678-1234-56789abcdef0")
+        val SPEED_ANNOUNCE_UUID = UUID.fromString("1234000B-1234-5678-1234-56789abcdef0")
 
         /** Target lead time (ms) the phone aims to have all devices speak the roll-call together. */
         const val ROLLCALL_PLAY_TARGET_MS = 300
+
+        /** Unison target spread for Speed Announce writes (BLE_PROTOCOL §1.11, ADR-0018). */
+        const val SPEED_ANNOUNCE_TARGET_MS = 300
 
         // Standard BLE Battery Service UUIDs
         val BATTERY_SERVICE_UUID = UUID.fromString("0000180F-0000-1000-8000-00805f9b34fb")
@@ -1374,6 +1378,54 @@ class BleManager(private val context: Context) {
             val payload = RollCallCodec.encodePlay(startDelayMs = targetDelayMs - elapsed, volume = volume)
             sendRollCallWrite(deviceId, payload, BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE, "rollcall-play")
         }
+    }
+
+    /**
+     * Speaks the current Canoe Speed on every device in unison (Speed Announce — BLE_PROTOCOL §1.11,
+     * ADR-0018). Same decreasing-delay scheme as [broadcastRollCallPlay]: devices reached earlier
+     * wait longer so all speak together; sent Write Without Response to minimize per-write latency.
+     * The phone stays silent (ADR-0016). Caller must only invoke this with a real (non-null) speed.
+     */
+    fun broadcastCanoeSpeed(
+        speedKmh: Float,
+        volume: Int = 100,
+        targetDelayMs: Int = SPEED_ANNOUNCE_TARGET_MS
+    ): BroadcastResult {
+        val t0 = System.currentTimeMillis()
+        Log.d(TAG, "broadcastCanoeSpeed: ${"%.1f".format(speedKmh)} km/h, target=${targetDelayMs}ms")
+        return broadcast("canoeSpeed", includePacer = true) { deviceId ->
+            val elapsed = (System.currentTimeMillis() - t0).toInt()
+            val payload = SpeedAnnounceCodec.encode(
+                speedKmh = speedKmh,
+                startDelayMs = targetDelayMs - elapsed,
+                volume = volume
+            )
+            sendSpeedAnnounceWrite(deviceId, payload)
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun sendSpeedAnnounceWrite(deviceId: String, payload: ByteArray): Boolean {
+        if (!hasRequiredPermissions()) {
+            Log.w(TAG, "speed-announce failed for $deviceId: Missing Bluetooth permissions")
+            return false
+        }
+        val gatt = deviceGattMap[deviceId] ?: run {
+            Log.w(TAG, "speed-announce failed for $deviceId: GATT connection not found")
+            return false
+        }
+        val hapticService = gatt.getService(ORO_HAPTIC_SERVICE_UUID) ?: run {
+            Log.w(TAG, "speed-announce failed for $deviceId: Oro Haptic Service not found")
+            return false
+        }
+        val speedChar = hapticService.getCharacteristic(SPEED_ANNOUNCE_UUID) ?: run {
+            Log.w(TAG, "speed-announce failed for $deviceId: Speed Announce characteristic not found (firmware may need update)")
+            return false
+        }
+        return enqueueCharacteristicWrite(
+            gatt, speedChar, payload,
+            BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE, "speed-announce"
+        )
     }
 
     @SuppressLint("MissingPermission")
