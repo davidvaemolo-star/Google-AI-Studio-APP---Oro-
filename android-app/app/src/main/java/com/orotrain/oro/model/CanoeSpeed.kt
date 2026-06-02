@@ -7,8 +7,6 @@ package com.orotrain.oro.model
 object CanoeSpeedConfig {
     /** Rolling-average window used to smooth raw GPS speed before speaking it. */
     const val SMOOTHING_WINDOW_MS: Long = 1_500
-    /** Unison target spread for the Speed Announce writes (mirrors Roll-Call PLAY). */
-    const val ANNOUNCE_TARGET_MS: Int = 300
     /**
      * Highest km/h the firmware can speak; the codec clamps to this. 29.9 (not 30.0) so the device
      * never needs a "thirty" clip — 21–29 are composed as "twenty" + ones (ADR-0018).
