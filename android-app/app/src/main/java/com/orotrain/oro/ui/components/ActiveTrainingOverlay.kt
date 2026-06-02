@@ -182,6 +182,13 @@ fun ActiveTrainingOverlay(
                             label = "SPM",
                             value = "${trainingSession.currentSpm}"
                         )
+
+                        // Coach-facing Canoe Speed / GPS readout (ADR-0018). Speed call-outs are
+                        // silently skipped without a GPS fix, so surface the live status here.
+                        InfoCard(
+                            label = "Speed",
+                            value = state.canoeSpeedKmh?.let { "%.1f km/h".format(it) } ?: "GPS: no fix"
+                        )
                     }
 
                     Spacer(modifier = Modifier.height(24.dp))
