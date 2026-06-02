@@ -15,6 +15,7 @@ Outrigger canoe (OC6) training system. Each device is built into a paddle's t-ha
 - **Catch** / **Finish**: Catch = blade enters water (haptic fires here); Finish = blade exits (stroke count advances here). These are intentionally decoupled — see `docs/adr/0001-haptic-on-catch-count-on-finish.md`.
 - **Pacer** (not leader/master) / **Follower** (not slave/non-pacer).
 - **Top Hand Pressure** (not grip force/FSR pressure); **Peak Pressure** → **Power Range**.
+- **Crew Roll-Call** (not summary/leaderboard): the end-of-session per-seat read-out spoken on every device in unison; the phone is silent (ADR-0016). **Standby** = pressed Start but armed and waiting for the Pacer's first Catch (ADR-0017). **Countdown** = the old synchronized start beeps + GO buzz — **retired** (ADR-0017).
 - **Training Controller** = Android app; **Configuration Planner** = web UI.
 
 ## Project Structure
@@ -56,11 +57,11 @@ Built with Arduino IDE. See `firmware/COMPILE_INSTRUCTIONS.md`. Board: Seeed XIA
 
 The phone mediates all haptic coordination. When the Pacer's device detects a Catch, it sends a BLE notification to the phone; the phone then writes `CMD_SINGLE_PULSE` to every Follower. **Devices never signal each other directly** — the nRF52840 cannot act as both BLE central and peripheral simultaneously. This is a hardware constraint, not a trade-off (ADR-0002). The 50ms "perfect sync" threshold in Sync Score is calibrated to this round-trip budget.
 
-BLE service UUID: `12340000-1234-5678-1234-56789abcdef0`. Full characteristic spec in `firmware/BLE_PROTOCOL.md`.
+BLE service UUID: `12340000-1234-5678-1234-56789abcdef0`. Full characteristic spec in `firmware/BLE_PROTOCOL.md`. At session end the phone loads a per-seat roster onto every device and triggers them to speak the **Crew Roll-Call** in unison (Roll-Call Control characteristic `…000A`; ADR-0016). The phone itself plays no audio — all sound comes from the devices.
 
 ### Android Architecture
 
-Single `MainViewModel` owns all state as `OroUiState` (a single `StateFlow`). `BleManager`, `AudioManager`, `SessionRepository`, and `ProgrammeRepository` are injected as nullable constructor parameters — when null, the ViewModel falls back to simulated data (scan/connect mocks). Never add real logic to the simulated fallback paths.
+Single `MainViewModel` owns all state as `OroUiState` (a single `StateFlow`). `BleManager`, `SessionRepository`, and `ProgrammeRepository` are injected as nullable constructor parameters — when null, the ViewModel falls back to simulated data (scan/connect mocks). Never add real logic to the simulated fallback paths. (The phone has **no** audio component — the old `AudioManager` TTS was removed; ADR-0016.)
 
 ```
 BleManager (BLE I/O)
@@ -69,7 +70,7 @@ BleManager (BLE I/O)
             ├─ updates OroUiState
             ├─ StrokeAnalyzer.onStrokeEvent()  ← accumulates StrokeRecord per stroke
             │    └─ emits CoachingEvent
-            │         └─ CoachingEngine.onCoachingEvent() ← throttled haptic/audio feedback
+            │         └─ CoachingEngine.onCoachingEvent() ← throttled haptic feedback (phone silent, ADR-0016)
             └─ triggerFollowerHaptics() ← BleManager.broadcastHaptic() to all Followers
 ```
 
@@ -83,15 +84,15 @@ Seats are auto-assigned by device name order when devices connect. The coach can
 
 1. **Pre-session**: Devices connect → auto-assigned seats → each device completes Calibration (a ~1s resting-baseline/tare hold, then 50 strokes; firmware sets threshold at 55% of peak acceleration *above rest* — ADR-0012) → device reaches `CalibrationState.Complete`. Calibration survives a BLE reconnect; the firmware's reported DeviceState is the source of truth (ADR-0014).
 2. `canStartTraining` and the Pre-Training Checklist derive from one shared list, `OroUiState.startChecks` (ADR-0013). Blocking checks: ≥1 connected device, a Pacer in Seat 1, all connected devices calibrated, ≥1 zone. A loaded Programme is **not** required (ad-hoc sessions allowed); low battery warns but never blocks.
-3. **Session start**: `configureCurrentZone()` sends Zone Settings BLE packet (with `isPacer = seat == 1`) → `startTraining()` on all devices → `enableStrokeDetection()` on the Pacer (firmware detects on every device by default) → `enableStrokeNotificationsForAllConnected()` so the phone hears *every* device's Catches for sync (ADR-0015) → status = Active.
+3. **Session start (ADR-0017)**: `configureCurrentZone()` sends Zone Settings BLE packet (with `isPacer = seat == 1`) → `startTraining()` on all devices → `enableStrokeDetection()` on the Pacer (firmware detects on every device by default) → `enableStrokeNotificationsForAllConnected()` so the phone hears *every* device's Catches for sync (ADR-0015) → status = **Standby** (not Active), devices speak **"Stand by"**, session clock unset. The Countdown is **retired**. The session becomes **Active** only when the Pacer's first Catch is **pressure-confirmed** on the phone (`FirstCatchGate` watches the FSR for a Top Hand Pressure rise within a window after the Catch); `beginSession()` then backdates `startTimeMillis` to that Catch and replays it as stroke 1. The phone stays silent.
 4. **During session**: every device reports its own Catches. The Pacer's Catch → phone triggers haptics on all (including Pacer); each Follower's Catch feeds only its Sync Score. Pacer Finish → `processStrokeForTraining()` advances stroke/set/zone. Stroke analytics (SPM, Power Range, coaching) are fed the **Pacer's** events only. Zone transitions broadcast audio prompts (beep, voice).
-5. **Session end**: `SyncComputer.crewAverageGapMs()` computes the crew sync gap from the recorded Catches (clock-aligned per device, absolute gap — ADR-0015); `SessionOutcome.compute()` derives Sync Rating × Power Range; `sessionSummaryAudioPromptFor()` picks one of 12 pre-recorded prompts (or **none** when sync is Not Measured) → broadcasts audio → saves to Room DB via `SessionRepository`.
+5. **Session end (ADR-0017)**: `CrewRollCall.compute()` builds the result — a crew **Sync Rating** plus, per Seat, that paddler's own Sync Rating and Power Range — from the recorded Catches (`SyncComputer.perDeviceAverageGapMs`/`crewAverageGapMs`, clock-aligned absolute gap, ADR-0015) and each device's recorded Top Hand Pressure peaks. `playEndOfSessionSequence()` then speaks **"Session complete"**, "+2 s" **"Stand by for results"**, and "+30 s" plays the **Crew Roll-Call**: `RollCallCodec` encodes the roster, `BleManager.broadcastRollCallLoad()` loads it immediately and `broadcastRollCallPlay()` plays it after the delay so every device speaks it in unison (ADR-0016); the Pacer has no Sync Score and a Follower with none is read as Not Measured. Session also saved to Room DB via `SessionRepository`.
 
 ### Stroke Analysis Pipeline
 
-`StrokeAnalyzer` assembles `StrokeRecord`s across CATCH→DRIVE→FINISH phases from the Pacer's events. After each FINISH it recomputes rolling `StrokeMetrics` (drive ratio, consistency CV, fatigue index, SPM) and emits `CoachingEvent`s with a 15-second per-issue cooldown. `CoachingEngine` maps these events to haptic patterns and audio, throttled to 5s (haptic) and 20s (audio) minimums.
+`StrokeAnalyzer` assembles `StrokeRecord`s across CATCH→DRIVE→FINISH phases from the Pacer's events. After each FINISH it recomputes rolling `StrokeMetrics` (drive ratio, consistency CV, fatigue index, SPM) and emits `CoachingEvent`s with a 15-second per-issue cooldown. `CoachingEngine` maps these events to haptic patterns, throttled to a 5s minimum. Coaching is **haptic-only** — the phone has no audio (ADR-0016).
 
-`sessionAverageFsrPeak()` on `StrokeAnalyzer` provides the Power Range input for the Session Summary prompt.
+Per-seat **Power Range** in the Crew Roll-Call comes from each device's *own* Top Hand Pressure peaks, captured per stroke from the FSR stream in `MainViewModel` and fed to `CrewRollCall.compute()` — not just the Pacer's `StrokeAnalyzer` strokes.
 
 ### Zone → BLE Mapping
 
@@ -112,7 +113,7 @@ Seats are auto-assigned by device name order when devices connect. The coach can
 | 0002 | Follower haptics are phone-mediated — devices cannot signal each other |
 | 0003 | Calibration gates session participation; it is not a boolean flag |
 | 0004 | Catch confirmation requires IMU trigger + Top Hand Pressure rise |
-| 0005 | Session summary uses 12 pre-recorded voice prompts |
+| 0005 | Session summary uses pre-recorded voice prompts, not dynamic TTS — *superseded by 0016* |
 | 0006 | Single Pacer across all canoes |
 | 0007 | Programmes live on Android as a local JSON library; loading copies zones into the session |
 | 0008 | Audio: tones for timing cues, voice for content cues (I2S sample-rate fix in firmware) |
@@ -123,6 +124,8 @@ Seats are auto-assigned by device name order when devices connect. The coach can
 | 0013 | A Session starts from the loaded Zones (ad-hoc allowed); no saved Programme required. Start button + checklist share one requirement list |
 | 0014 | Calibration survives a BLE reconnect; firmware DeviceState (via ~3s heartbeat) is the source of truth, so a blip no longer forces a redo |
 | 0015 | Sync Score: all devices detect & report their Catch; score is the absolute follower↔pacer gap on an aligned clock; no data → Not Measured (not Poor) |
+| 0016 | End-of-session audio is a per-seat **Crew Roll-Call** spoken on every device in unison (clips on external QSPI flash); the phone is silent (supersedes 0005) |
+| 0017 | A Session begins on the Pacer's first (pressure-confirmed) Catch via a new **Standby** state — not a synchronized countdown (Countdown retired); end gains spoken "Session complete" → "Stand by for results" → Crew Roll-Call (supersedes the start half of 0008) |
 
 ## Known Open Issues
 
@@ -130,6 +133,9 @@ Seats are auto-assigned by device name order when devices connect. The coach can
 - **Sync notification load**: since ADR-0015 the phone subscribes to *every* device's Catch events during a session (not just the Pacer's), increasing BLE notification traffic. Validate this against the 6→12 device goal.
 - **SPM is fixed per intensity level**: `Zone.targetSpm` is a hardcoded midpoint. The BLE protocol supports per-zone SPM; this is not yet surfaced in the UI.
 - **Sync Score thresholds are placeholders**: the 50 ms / 300 ms gap bounds and the per-device clock-offset assumptions (ADR-0015) are unvalidated against field data.
+- **Crew Roll-Call unison is best-effort**: the phone gives each device a compensated decreasing delay so they start the spoken roster together (ADR-0016, BLE_PROTOCOL §1.10), but this isn't validated on a full 12-device crew — overlapping voices may need tuning.
+- **Per-seat Power Range is a proxy**: each Seat's Power Range averages its per-stroke FSR pressure peaks (Followers aren't stroke-segmented like the Pacer). Unvalidated against field data.
+- **Roll-Call voice clips live on external QSPI flash**: generated by `firmware/generate_roll_call_clips.py` (gTTS female) → `build_audio_blob.py` → flashed per `VOICE_PROMPTS_SETUP.md`. If a paddle isn't flashed it *beeps* the roll-call (tone fallback) instead of speaking it. The session start/end prompts (**"stand by"**, **"session complete"**, **"stand by for results"**, IDs 0x14–0x16; ADR-0017) ride the *same* pipeline and same tone fallback — they must be regenerated and re-flashed.
 
 ## Deferred Refactors
 

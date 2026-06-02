@@ -102,6 +102,24 @@ fun ActiveTrainingOverlay(
                         .padding(24.dp),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
+                    // Standby: armed and waiting for the Pacer's first Catch (ADR-0017). Nothing is
+                    // counted yet, so show a clear waiting banner instead of the 0/0 stroke display.
+                    if (trainingSession.status == TrainingStatus.Standby) {
+                        Text(
+                            text = "STAND BY",
+                            style = MaterialTheme.typography.headlineMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            text = "Waiting for the Pacer's first stroke",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+                        )
+                        Spacer(modifier = Modifier.height(24.dp))
+                    }
+
                     // Zone indicator header
                     currentZone?.let { zone ->
                         ZoneLevelIndicator(zone = zone)
@@ -174,37 +192,40 @@ fun ActiveTrainingOverlay(
                         horizontalArrangement = Arrangement.Center,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        // Pause/Resume button
-                        IconButton(
-                            onClick = {
-                                if (trainingSession.status == TrainingStatus.Active) {
-                                    onPause()
-                                } else {
-                                    onResume()
-                                }
-                            },
-                            modifier = Modifier
-                                .size(64.dp)
-                                .clip(CircleShape)
-                                .background(MaterialTheme.colorScheme.primaryContainer)
-                        ) {
-                            Icon(
-                                imageVector = if (trainingSession.status == TrainingStatus.Active) {
-                                    Icons.Rounded.Pause
-                                } else {
-                                    Icons.Rounded.PlayArrow
+                        // Pause/Resume button — not meaningful in Standby (nothing is running yet),
+                        // where only Stop (cancel) applies (ADR-0017).
+                        if (trainingSession.status != TrainingStatus.Standby) {
+                            IconButton(
+                                onClick = {
+                                    if (trainingSession.status == TrainingStatus.Active) {
+                                        onPause()
+                                    } else {
+                                        onResume()
+                                    }
                                 },
-                                contentDescription = if (trainingSession.status == TrainingStatus.Active) {
-                                    "Pause training"
-                                } else {
-                                    "Resume training"
-                                },
-                                modifier = Modifier.size(32.dp),
-                                tint = MaterialTheme.colorScheme.onPrimaryContainer
-                            )
-                        }
+                                modifier = Modifier
+                                    .size(64.dp)
+                                    .clip(CircleShape)
+                                    .background(MaterialTheme.colorScheme.primaryContainer)
+                            ) {
+                                Icon(
+                                    imageVector = if (trainingSession.status == TrainingStatus.Active) {
+                                        Icons.Rounded.Pause
+                                    } else {
+                                        Icons.Rounded.PlayArrow
+                                    },
+                                    contentDescription = if (trainingSession.status == TrainingStatus.Active) {
+                                        "Pause training"
+                                    } else {
+                                        "Resume training"
+                                    },
+                                    modifier = Modifier.size(32.dp),
+                                    tint = MaterialTheme.colorScheme.onPrimaryContainer
+                                )
+                            }
 
-                        Spacer(modifier = Modifier.width(16.dp))
+                            Spacer(modifier = Modifier.width(16.dp))
+                        }
 
                         // Stop button
                         Button(

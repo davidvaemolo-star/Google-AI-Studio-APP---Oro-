@@ -51,6 +51,11 @@ PROMPTS = [
     ("rc_seat_6",           0x41),
     ("rc_canoe_1",          0x42),
     ("rc_canoe_2",          0x43),
+    # Session start/end voice prompts (ADR-0017). Packed by their audio-event id so the firmware
+    # plays them via externalAudio.playClip(<id>); not part of the 0x30+ roll-call sequence.
+    ("session_standby",              0x14),
+    ("session_complete",             0x15),
+    ("session_standby_for_results",  0x16),
 ]
 
 HEADER_SIZE = 12              # magic+version+count+reserved

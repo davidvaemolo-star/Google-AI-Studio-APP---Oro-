@@ -81,6 +81,12 @@ enum class AppDestination {
 enum class TrainingStatus {
     Idle,
     Starting,
+    /**
+     * Armed and waiting for the Pacer's first Catch (ADR-0017). Devices are configured and
+     * detecting and each paddle has spoken "Stand by", but nothing is measured yet. The session
+     * leaves Standby for Active the instant the Pacer's first Catch is pressure-confirmed.
+     */
+    Standby,
     Active,
     Paused,
     Completed
@@ -130,5 +136,7 @@ data class TrainingSessionState(
         }
 
     val isActive: Boolean
-        get() = status == TrainingStatus.Active || status == TrainingStatus.Paused
+        get() = status == TrainingStatus.Standby ||
+                status == TrainingStatus.Active ||
+                status == TrainingStatus.Paused
 }

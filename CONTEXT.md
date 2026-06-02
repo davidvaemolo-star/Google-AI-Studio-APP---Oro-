@@ -129,9 +129,13 @@ _Avoid_: results, stats, report
 The spoken end-of-session read-out, played on every device in unison. It announces the crew's overall **Sync Rating**, then goes through every occupied **Seat** in order — identified by **Canoe + Seat** when more than one canoe is present — giving that paddler's **Sync Rating** and **Power Range**, so the whole crew hears who synced and who didn't. The **Pacer** (Seat 1) has no **Sync Score**, so its entry names it as the pacer and reads its **Power Range** only. A Follower with no measured sync is read as Not Measured rather than given a rating (ADR-0015).
 _Avoid_: summary voice prompt, leaderboard, results read-out
 
-**Countdown**:
-The synchronised start signal: tones played together on every device, ending in a single haptic buzz on "go", so the crew's first **Catch** is together. A timing cue, so it is tones-and-buzz and never spoken (ADR-0008).
-_Avoid_: start beep, go signal, ready-go
+**Standby**:
+The state a **Session** is in after the coach presses Start but before it is **Active**: every device is configured and detecting, and each paddle has spoken the **"Stand by"** prompt, but nothing is yet measured. The Session leaves Standby and becomes Active the instant the **Pacer** takes its first **Catch** (pressure-confirmed). The armed waiting time is excluded from session duration (ADR-0017).
+_Avoid_: armed, ready (Ready is a device-level term), waiting, starting (Starting is the brief configuring transient before Standby)
+
+**Countdown** _(retired — ADR-0017)_:
+Formerly the synchronised start signal (tones + a "go" buzz so the crew's first **Catch** was together, ADR-0008). Replaced by **Standby**: the Session now begins on the Pacer's first Catch rather than on a synchronised go, so there is no pre-stroke countdown. Term kept only so older references resolve.
+_Avoid_: using as a live concept — it no longer fires
 
 ### Tools
 
@@ -172,6 +176,8 @@ _Avoid_: Android app, mobile app
 - **Power Range boundaries**: Light/Moderate/Strong/Maximum split at 25%/50%/75% are placeholders — to be validated against field data.
 - **Sync Score thresholds**: The 50ms (perfect) and 300ms (zero) latency bounds are placeholders — not validated against biomechanical perception thresholds or real BLE round-trip measurements.
 - **FSR secondary Catch confirmation**: `sessionAverageFsrPeak()` now feeds Power Range in the Session Summary. Remaining: use Top Hand Pressure as a secondary confirmation gate for Catch detection.
+- **First-Catch confirmation thresholds**: The Standby→Active gate uses a Top Hand Pressure rise within a window (~400ms) after the Pacer's first Catch to reject accidental bumps (ADR-0017). The window length and the confirmation pressure % are placeholders — to be validated against field data.
+- **Roll-Call delay**: The 30s gap between "Stand by for results" and the Crew Roll-Call (ADR-0017) is a placeholder — to be validated against how long crews actually need to settle.
 - **Calibration removal**: Firmware currently requires a per-device calibration step to set the IMU stroke detection threshold (55% of the paddler's peak acceleration). The fixed default (1.0g, derived from real paddle data) may be sufficient for all crew members. To be validated against field data — if consistent, the Calibration step and Ready state could be removed from the pre-session flow.
 
 ## Known constraints to resolve

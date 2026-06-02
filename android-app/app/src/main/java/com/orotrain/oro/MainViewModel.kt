@@ -17,6 +17,9 @@ import com.orotrain.oro.model.swapSeats
 import com.orotrain.oro.model.OroUiState
 import com.orotrain.oro.model.SessionAudioCue
 import com.orotrain.oro.model.StrokeProgression
+import com.orotrain.oro.model.FirstCatchResult
+import com.orotrain.oro.model.onPacerCatch
+import com.orotrain.oro.model.onPacerPressure
 import com.orotrain.oro.model.TrainingSessionState
 import com.orotrain.oro.model.computeStrokeProgression
 import com.orotrain.oro.model.Zone
@@ -34,6 +37,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
 
 class MainViewModel(
     private val bleManager: BleManager? = null,
@@ -43,6 +47,11 @@ class MainViewModel(
 
     companion object {
         private const val TAG = "MainViewModel"
+
+        // End-of-session audio timing (ADR-0017). The 30s gap is a placeholder pending field data
+        // (see CONTEXT.md open questions) — how long crews actually need to settle before the read-out.
+        private const val SESSION_COMPLETE_TO_STANDBY_MS = 2_000L
+        private const val STANDBY_TO_ROLLCALL_MS = 30_000L
     }
 
     private val _uiState = MutableStateFlow(OroUiState())
@@ -66,6 +75,14 @@ class MainViewModel(
     // appended to deviceStrokePeaks and reset. Same lifecycle as sessionCatchSamples; guarded by syncLock.
     private val deviceStrokePeaks = mutableMapOf<String, MutableList<Int>>()
     private val deviceCurrentStrokePeak = mutableMapOf<String, Int>()
+
+    // Standby->Active first-Catch gate (ADR-0017). While in Standby the Pacer's first Catch arms the
+    // gate and is stashed in pendingFirstCatch; a Top Hand Pressure rise within the window confirms
+    // it, at which point the session goes Active (backdated) and the stashed Catch is replayed as
+    // stroke 1. Both are guarded by firstCatchLock since Catch and FSR arrive on separate callbacks.
+    private val firstCatchLock = Any()
+    private var firstCatchGate = com.orotrain.oro.model.FirstCatchGate()
+    private var pendingFirstCatch: BleManager.StrokeEvent? = null
 
     init {
         // Observe BLE manager state if available
@@ -158,6 +175,20 @@ class MainViewModel(
     private fun handleStrokeEvent(event: BleManager.StrokeEvent) {
         val isActive = _uiState.value.trainingSession.status == com.orotrain.oro.model.TrainingStatus.Active
         val pacerId = _uiState.value.devices.find { it.seat == 1 }?.id
+
+        // Standby: the Pacer's Catch arms the start gate but doesn't count or record yet — a Top Hand
+        // Pressure rise must confirm it (handleFsrUpdate) before the session goes Active (ADR-0017).
+        // Stash the event so it can be replayed as stroke 1's Catch once confirmed.
+        if (_uiState.value.trainingSession.status == com.orotrain.oro.model.TrainingStatus.Standby &&
+            event.deviceId == pacerId &&
+            event.phase == BleManager.STROKE_PHASE_CATCH) {
+            synchronized(firstCatchLock) {
+                firstCatchGate = firstCatchGate.onPacerCatch(System.currentTimeMillis())
+                pendingFirstCatch = event
+            }
+            Log.d(TAG, "Standby: Pacer Catch armed, awaiting Top Hand Pressure confirmation")
+            return
+        }
 
         // Stroke analytics (SPM, drive ratio, Power Range, coaching) are PACER-only. Every device
         // now reports its own Catches (ADR-0015), so feeding follower events here would pollute the
@@ -350,6 +381,14 @@ class MainViewModel(
             state.copy(devices = updatedDevices)
         }
 
+        // Standby: a Top Hand Pressure rise on the Pacer within the window confirms its armed Catch
+        // and officially begins the session (ADR-0017). A stray bump never raises pressure, so it
+        // won't start training.
+        if (_uiState.value.trainingSession.status == com.orotrain.oro.model.TrainingStatus.Standby) {
+            maybeConfirmFirstCatch(update)
+            return
+        }
+
         // Drive LED feedback based on grip force (during active training)
         if (_uiState.value.trainingSession.status == com.orotrain.oro.model.TrainingStatus.Active) {
             coachingEngine.onFsrUpdate(update.deviceId, update.forcePercent)
@@ -361,6 +400,49 @@ class MainViewModel(
                 if (update.forcePercent > prev) deviceCurrentStrokePeak[update.deviceId] = update.forcePercent
             }
         }
+    }
+
+    /**
+     * Feeds a Pacer Top Hand Pressure sample to the first-Catch gate while in Standby. On
+     * confirmation, officially begins the session (ADR-0017).
+     */
+    private fun maybeConfirmFirstCatch(update: BleManager.FsrUpdate) {
+        val pacerId = _uiState.value.devices.find { it.seat == 1 }?.id
+        if (update.deviceId != pacerId) return
+
+        val confirmed: Pair<Long, BleManager.StrokeEvent?>? = synchronized(firstCatchLock) {
+            when (val result = firstCatchGate.onPacerPressure(update.forcePercent, System.currentTimeMillis())) {
+                is FirstCatchResult.Confirmed -> {
+                    firstCatchGate = result.gate
+                    val stashed = pendingFirstCatch
+                    pendingFirstCatch = null
+                    result.startTimePhoneMs to stashed
+                }
+                is FirstCatchResult.Pending -> {
+                    firstCatchGate = result.gate
+                    null
+                }
+            }
+        }
+        confirmed?.let { (startMs, firstCatch) -> beginSession(startMs, firstCatch) }
+    }
+
+    /**
+     * Officially begins the session on the Pacer's confirmed first Catch (ADR-0017): goes Active with
+     * the clock backdated to the Catch, then replays the stashed Catch so it feeds Sync Score and
+     * analytics as stroke 1's Catch now that the session is Active.
+     */
+    private fun beginSession(startTimePhoneMs: Long, firstCatch: BleManager.StrokeEvent?) {
+        _uiState.update {
+            it.copy(
+                trainingSession = it.trainingSession.copy(
+                    status = com.orotrain.oro.model.TrainingStatus.Active,
+                    startTimeMillis = startTimePhoneMs
+                )
+            )
+        }
+        Log.d(TAG, "First Catch confirmed — session Active, backdated to $startTimePhoneMs")
+        firstCatch?.let { handleStrokeEvent(it) }
     }
 
     /** Maps a model-level [SessionAudioCue] to its BLE audio-event byte. */
@@ -397,9 +479,10 @@ class MainViewModel(
             // Hold the per-seat Crew Roll-Call for the on-screen breakdown and the spoken roll-call (ADR-0016).
             _uiState.update { it.copy(trainingSession = it.trainingSession.copy(crewRollCall = rollCall)) }
             Log.d(TAG, "Crew Roll-Call: crew=${rollCall.crewSyncRating}, seats=${rollCall.seats}")
-            // Speak the per-seat roll-call on every device, replacing the retired crew summary prompt (ADR-0016).
-            broadcastCrewRollCall(rollCall)
+            // Stop the devices first so the stop can't clip the end-of-session audio, then run the
+            // spoken end sequence (ADR-0017).
             stopTrainingSession()
+            playEndOfSessionSequence(rollCall)
         }
     }
 
@@ -419,11 +502,21 @@ class MainViewModel(
         )
     }
 
-    /** Loads the Crew Roll-Call onto every device, then triggers them to speak it in unison (ADR-0016). */
-    private fun broadcastCrewRollCall(rollCall: com.orotrain.oro.model.CrewRollCall) {
-        if (rollCall.seats.isEmpty()) return
-        bleManager?.broadcastRollCallLoad(rollCall)
-        bleManager?.broadcastRollCallPlay(volume = 100)
+    /**
+     * End-of-session audio (ADR-0017): every paddle speaks "Session complete", then "Stand by for
+     * results" 2s later, then the Crew Roll-Call (ADR-0016) ~30s after that. The roster is loaded
+     * immediately and only played after the delay (load/play split, BLE_PROTOCOL §1.10). The phone
+     * stays silent throughout (ADR-0016).
+     */
+    private fun playEndOfSessionSequence(rollCall: com.orotrain.oro.model.CrewRollCall) {
+        broadcastAudioPrompt(BleManager.AUDIO_SESSION_COMPLETE, 100)
+        if (rollCall.seats.isNotEmpty()) bleManager?.broadcastRollCallLoad(rollCall)
+        viewModelScope.launch {
+            delay(SESSION_COMPLETE_TO_STANDBY_MS)
+            broadcastAudioPrompt(BleManager.AUDIO_STANDBY_FOR_RESULTS, 100)
+            delay(STANDBY_TO_ROLLCALL_MS)
+            if (rollCall.seats.isNotEmpty()) bleManager?.broadcastRollCallPlay(volume = 100)
+        }
     }
 
     private fun broadcastAudioPrompt(audioEvent: Byte, volume: Int = 90) {
@@ -731,7 +824,7 @@ class MainViewModel(
         bleManager?.testHapticPattern(deviceId, pattern)
     }
 
-    fun testAudioBroadcast(audioEvent: Byte = BleManager.AUDIO_SESSION_START_BEEP, volume: Int = 90) {
+    fun testAudioBroadcast(audioEvent: Byte = BleManager.AUDIO_STANDBY, volume: Int = 90) {
         Log.d(TAG, "=== TEST AUDIO BROADCAST ===")
         Log.d(TAG, "Audio Event: 0x${String.format("%02X", audioEvent)}, Volume: $volume")
         Log.d(TAG, "Connected devices: ${_uiState.value.devices.filter { it.status == DeviceStatus.Connected }.size}")
@@ -856,8 +949,13 @@ class MainViewModel(
             deviceStrokePeaks.clear()
             deviceCurrentStrokePeak.clear()
         }
+        synchronized(firstCatchLock) {
+            firstCatchGate = com.orotrain.oro.model.FirstCatchGate()
+            pendingFirstCatch = null
+        }
 
-        // Set status to Starting
+        // Set status to Starting. The session clock stays unset (startTimeMillis = null) until the
+        // Pacer's first Catch officially begins the session (ADR-0017) — line-up time is excluded.
         _uiState.update {
             it.copy(
                 trainingSession = TrainingSessionState(
@@ -865,7 +963,7 @@ class MainViewModel(
                     currentZoneIndex = 0,
                     currentStroke = 0,
                     currentSet = 1,
-                    startTimeMillis = System.currentTimeMillis(),
+                    startTimeMillis = null,
                     errorMessage = null
                 )
             )
@@ -892,17 +990,20 @@ class MainViewModel(
                 enableStrokeDetection(it.id)
             } ?: Log.w(TAG, "No pacer device found (Seat 1) - stroke detection not enabled!")
 
-            // Set status to Active
+            // Devices are configured and detecting; arm the session and wait for the Pacer's first
+            // Catch (ADR-0017). The session only becomes Active once that Catch is pressure-confirmed
+            // in handleFsrUpdate. Nothing is measured during Standby.
             _uiState.update {
                 it.copy(
                     trainingSession = it.trainingSession.copy(
-                        status = com.orotrain.oro.model.TrainingStatus.Active
+                        status = com.orotrain.oro.model.TrainingStatus.Standby
                     )
                 )
             }
 
-            // Audio: synchronized start countdown + GO buzz on the devices (the phone is silent — ADR-0016)
-            broadcastAudioPrompt(BleManager.AUDIO_SESSION_START_BEEP, 100)
+            // Audio: every paddle speaks "Stand by" (the phone is silent — ADR-0016). Replaces the
+            // retired Countdown (ADR-0017).
+            broadcastAudioPrompt(BleManager.AUDIO_STANDBY, 100)
         }
     }
 

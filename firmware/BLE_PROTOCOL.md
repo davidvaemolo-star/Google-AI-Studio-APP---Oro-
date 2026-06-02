@@ -293,13 +293,16 @@ Byte 1: Volume (uint8, 0–100)
 | Value | Name | Type | Description |
 |-------|------|------|-------------|
 | 0x01 | AUDIO_POWER_ON | Voice | "Oro" — played on boot |
-| 0x02 | AUDIO_SESSION_START_BEEP | Tone + Haptic | 3 short beeps + 1 long go-beep, plus a synchronized buzz on the go-beep so the crew's first Catch is together (the Countdown — ADR-0016) |
+| 0x02 | AUDIO_SESSION_START_BEEP | — | **RETIRED** (ADR-0017). Was the Countdown (3 beeps + go-buzz). The Session now begins on the Pacer's first Catch, announced by AUDIO_STANDBY. ID reserved; do not reuse. |
 | 0x03 | AUDIO_SET_CHANGEOVER_BEEP | Tone | Single beep: set complete |
 | 0x04 | AUDIO_LAST_SET | Voice | "last set" |
 | 0x05 | AUDIO_NEXT_SET_LOW | Voice | "next set low" |
 | 0x06 | AUDIO_NEXT_SET_MEDIUM | Voice | "next set medium" |
 | 0x07 | AUDIO_NEXT_SET_HIGH | Voice | "next set high" |
 | 0x08–0x13 | AUDIO_SUMMARY_* | — | **RETIRED** (ADR-0016). The 12-prompt crew summary is replaced by the per-seat Crew Roll-Call (§1.10). These IDs remain reserved; do not reuse. |
+| 0x14 | AUDIO_STANDBY | Voice | "stand by" — spoken on every paddle when the coach presses Start; the Session is armed and waiting for the Pacer's first Catch (Standby; ADR-0017) |
+| 0x15 | AUDIO_SESSION_COMPLETE | Voice | "session complete" — spoken on every paddle at session end, before the Crew Roll-Call (ADR-0017) |
+| 0x16 | AUDIO_STANDBY_FOR_RESULTS | Voice | "stand by for results" — spoken 2 s after AUDIO_SESSION_COMPLETE; the Crew Roll-Call (§1.10) plays ~30 s later (ADR-0017) |
 
 The end-of-session summary is no longer a single crew-wide clip. It is delivered by the **Roll-Call Control** characteristic (§1.10): the phone loads every device with the full per-seat roster, then triggers all devices to speak it in unison (ADR-0016).
 
