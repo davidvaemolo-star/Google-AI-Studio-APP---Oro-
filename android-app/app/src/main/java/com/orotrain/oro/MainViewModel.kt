@@ -42,7 +42,8 @@ import kotlinx.coroutines.delay
 class MainViewModel(
     private val bleManager: BleManager? = null,
     private val sessionRepository: SessionRepository? = null,
-    private val programmeRepository: com.orotrain.oro.data.ProgrammeRepository? = null
+    private val programmeRepository: com.orotrain.oro.data.ProgrammeRepository? = null,
+    private val speedProvider: com.orotrain.oro.location.SpeedProvider? = null
 ) : ViewModel() {
 
     companion object {
@@ -75,6 +76,10 @@ class MainViewModel(
     // appended to deviceStrokePeaks and reset. Same lifecycle as sessionCatchSamples; guarded by syncLock.
     private val deviceStrokePeaks = mutableMapOf<String, MutableList<Int>>()
     private val deviceCurrentStrokePeak = mutableMapOf<String, Int>()
+
+    // Smooths raw GPS speed into the value spoken at each High set-end and shown to the coach
+    // (ADR-0018). Fed and read only on the main dispatcher (viewModelScope), so it needs no lock.
+    private val canoeSpeedSmoother = com.orotrain.oro.model.SpeedSmoother()
 
     // Standby->Active first-Catch gate (ADR-0017). While in Standby the Pacer's first Catch arms the
     // gate and is stashed in pendingFirstCatch; a Top Hand Pressure rise within the window confirms
@@ -150,6 +155,19 @@ class MainViewModel(
                     fsrUpdate?.let { update ->
                         handleFsrUpdate(update)
                     }
+                }
+            }
+        }
+
+        // Feed GPS fixes into the smoother and surface the smoothed value for the coach indicator
+        // (ADR-0018). A null fix is not added; once samples age out, smoothed() returns null and the
+        // UI shows "no fix" — and any call-out at that moment is skipped.
+        speedProvider?.let { provider ->
+            viewModelScope.launch {
+                provider.speedKmh.collect { kmh ->
+                    val now = System.currentTimeMillis()
+                    if (kmh != null) canoeSpeedSmoother.addSample(now, kmh)
+                    _uiState.update { it.copy(canoeSpeedKmh = canoeSpeedSmoother.smoothed(now)) }
                 }
             }
         }
@@ -459,6 +477,17 @@ class MainViewModel(
         progression.checkPaceTargetSpm?.let { strokeAnalyzer.checkPaceDeviation(it) }
 
         progression.audioCues.forEach { broadcastAudioPrompt(audioEventFor(it), 100) }
+
+        // Canoe Speed call-out: speak the smoothed speed on every device, or skip silently when
+        // there is no GPS fix (ADR-0018). The phone itself stays silent (ADR-0016).
+        if (progression.announceSpeed) {
+            val speed = canoeSpeedSmoother.smoothed(System.currentTimeMillis())
+            if (speed != null) {
+                bleManager?.broadcastCanoeSpeed(speed)
+            } else {
+                Log.d(TAG, "Canoe Speed call-out skipped: no GPS fix")
+            }
+        }
 
         if (progression.reconfigureZone) {
             viewModelScope.launch { configureCurrentZone() }
@@ -943,6 +972,8 @@ class MainViewModel(
         // Reset analytics and coaching for new session
         strokeAnalyzer.reset()
         coachingEngine.reset()
+        // Begin GPS tracking for Canoe Speed call-outs (ADR-0018); no-op without location permission.
+        speedProvider?.start()
         synchronized(syncLock) {
             sessionCatchSamples.clear()
             lastDeviceTimestampMs.clear()
@@ -1071,6 +1102,7 @@ class MainViewModel(
     }
 
     fun stopTrainingSession() {
+        speedProvider?.stop()
         val state = _uiState.value
         if (!state.trainingSession.isActive) return
         synchronized(syncLock) {
