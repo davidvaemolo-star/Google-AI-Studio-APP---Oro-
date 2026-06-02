@@ -11,8 +11,9 @@
         android:maxSdkVersion="30" />
     <uses-permission android:name="android.permission.BLUETOOTH_ADMIN"
         android:maxSdkVersion="30" />
-    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"
-        android:maxSdkVersion="30" />
+
+    <!-- GPS location for all Android versions — also required by Canoe Speed (ADR-0018) on API 31+ -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
 
     <!-- Declare BLE hardware feature -->
     <uses-feature android:name="android.hardware.bluetooth_le" android:required="true" />

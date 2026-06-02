@@ -40,7 +40,7 @@ A single nRF52840 hardware unit built into the t-handle of one paddler's paddle.
 _Avoid_: node, unit, peripheral, wrist device
 
 **Canoe**:
-One OC6 outrigger canoe with up to 6 seats. The system supports up to 2 canoes simultaneously on one Training Controller.
+One OC6 outrigger canoe with up to 6 seats. The system supports up to 2 canoes simultaneously on one Training Controller. The two canoes are not independent hulls on the water: they are lashed together with cross-beams into a single rigid **V12** (12-seat) hull that moves as one — so the crew always travels at a single speed, whether paddling a lone OC6 or a joined V12.
 _Avoid_: boat, crew (crew refers to all paddlers across all canoes)
 
 **Seat**:
@@ -103,6 +103,12 @@ _Avoid_: zero point, offset, tare (use these only as internal/implementation ter
 **Ready**:
 The state of a device whose Calibration is Complete and can participate in a session.
 _Avoid_: calibrated, connected (connected means BLE link only, not readiness for training)
+
+### Speed
+
+**Canoe Speed**:
+The GPS-measured ground speed of the canoe (a lone OC6 or a joined V12) carrying the Training Controller, expressed in km/h to one decimal place. Because the phone rides on the hull and the hull moves as one, this single value is the speed of the whole crew. During **High** intensity zones it is spoken aloud on every device, in unison, as a **bare number** with no unit word — e.g. "fourteen point three". The phone measures it but stays silent; the devices announce it (ADR-0016). It is not announced during Low or Medium zones.
+_Avoid_: boat speed, crew speed (crew spans hulls, but this is one value for one hull), velocity, GPS speed (the term is Canoe Speed; GPS is how it is measured)
 
 ### Synchronisation
 
@@ -178,6 +184,7 @@ _Avoid_: Android app, mobile app
 - **FSR secondary Catch confirmation**: `sessionAverageFsrPeak()` now feeds Power Range in the Session Summary. Remaining: use Top Hand Pressure as a secondary confirmation gate for Catch detection.
 - **First-Catch confirmation thresholds**: The Standby→Active gate uses a Top Hand Pressure rise within a window (~400ms) after the Pacer's first Catch to reject accidental bumps (ADR-0017). The window length and the confirmation pressure % are placeholders — to be validated against field data.
 - **Roll-Call delay**: The 30s gap between "Stand by for results" and the Crew Roll-Call (ADR-0017) is a placeholder — to be validated against how long crews actually need to settle.
+- **Canoe Speed timing**: The ~1–2 s GPS smoothing window, the "3 strokes from the end of the set" trigger point, and the realistic speed cap used for clip composition (ADR-0018) are placeholders — to be validated on the water. Open question whether the spoken value should later become the set's *peak* speed rather than the instantaneous reading.
 - **Calibration removal**: Firmware currently requires a per-device calibration step to set the IMU stroke detection threshold (55% of the paddler's peak acceleration). The fixed default (1.0g, derived from real paddle data) may be sufficient for all crew members. To be validated against field data — if consistent, the Calibration step and Ready state could be removed from the pre-session flow.
 
 ## Known constraints to resolve

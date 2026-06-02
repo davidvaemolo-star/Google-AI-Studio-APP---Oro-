@@ -395,6 +395,31 @@ with `TARGET_MS` set above the worst-case send spread (e.g. 300 ms). A device wr
 
 ---
 
+##### 1.11 Speed Announce (Write Only)
+**UUID:** `1234000B-1234-5678-1234-56789abcdef0`
+**Properties:** `BLEWrite`
+**Size:** 4 bytes
+
+Delivers a single **Canoe Speed** call-out (ADR-0018). The phone tracks the hull's GPS speed and, **only during High intensity zones**, writes the current speed to every device once per set — fired on the Pacer's 3rd-to-last Finish. Each device composes the number locally from stored digit clips ("fourteen" + "point" + "three") and speaks it as a **bare km/h number** (no unit word), in unison with the rest of the crew. The phone itself stays silent (ADR-0016).
+
+**Data Format:**
+```
+Byte 0:    Speed, km/h × 10 (uint16 LE) — e.g. 143 = 14.3 km/h
+Byte 1:    Speed MSB
+Byte 2:    Start delay (uint8) — units of 10 ms; the device waits this long after receiving the write, then speaks
+Byte 3:    Volume (uint8, 0–100)
+```
+
+**Spoken composition.** The device splits `speed/10` into a whole part and one decimal digit and speaks *whole* + "point" + *decimal*, e.g. 143 → "fourteen point three", 90 → "nine point zero". The whole part is always one decimal place (a trailing ".0" is spoken). Values are composed from number words 0–20 plus tens ("twenty" + ones for 21–29); the firmware clamps to the highest speed it has clips for. A device that has not been flashed with the number-word clips falls back to the existing tone fallback rather than speaking.
+
+**Keeping playback in unison.** Same compensated-delay scheme as Roll-Call PLAY (§1.10): the phone records `t0` before the first write and gives each device a *decreasing* Start delay (`delay_ms = TARGET_MS − (now − t0)`, clamped ≥ 0) so every device's `receipt + delay` lands at ≈ the same wall-clock moment. Sent as **Write Without Response** to minimize per-write latency.
+
+**No call-out cases.** If the phone has no trustworthy GPS fix at the trigger instant, or the set is too short to have a 3rd-to-last stroke (< 3 strokes), it simply does not write — that set is silent (ADR-0018). There is no "no signal" audio.
+
+**Firmware clip inventory (additional).** Beyond the Roll-Call clips (§1.10), Speed Announce needs: number words *"zero"…"twenty"* and the word *"point"* (~22 clips). Composing 21–29 reuses *"twenty"* + a ones word.
+
+---
+
 ### 2. Battery Service (Standard)
 **Service UUID:** `0000180F-0000-1000-8000-00805F9B34FB`
 
@@ -444,6 +469,7 @@ object BleConstants {
     val FSR_DATA_UUID              = UUID.fromString("12340008-1234-5678-1234-56789abcdef0")
     // Note: 12340009 is reserved (LED control was removed — LED is firmware-driven; see ADR-0009)
     val ROLLCALL_CONTROL_UUID      = UUID.fromString("1234000A-1234-5678-1234-56789abcdef0")
+    val SPEED_ANNOUNCE_UUID        = UUID.fromString("1234000B-1234-5678-1234-56789abcdef0")
 
     // Battery Service
     val BATTERY_SERVICE_UUID       = UUID.fromString("0000180F-0000-1000-8000-00805F9B34FB")
@@ -728,7 +754,8 @@ Oro Haptic Service:        12340000-1234-5678-1234-56789abcdef0
 ├─ Audio Control:          12340007-1234-5678-1234-56789abcdef0
 ├─ FSR Data:               12340008-1234-5678-1234-56789abcdef0
 │  (12340009 reserved — LED control removed, ADR-0009)
-└─ Roll-Call Control:      1234000A-1234-5678-1234-56789abcdef0
+├─ Roll-Call Control:      1234000A-1234-5678-1234-56789abcdef0
+└─ Speed Announce:         1234000B-1234-5678-1234-56789abcdef0
 
 Battery Service:           0000180F-0000-1000-8000-00805F9B34FB
 └─ Battery Level:          00002A19-0000-1000-8000-00805F9B34FB

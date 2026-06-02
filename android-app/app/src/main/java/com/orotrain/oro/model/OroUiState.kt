@@ -27,7 +27,12 @@ data class OroUiState(
     val editingProgrammeId: String? = null,
     val zones: List<Zone> = emptyList(),
     val isScanning: Boolean = false,
-    val trainingSession: TrainingSessionState = TrainingSessionState()
+    val trainingSession: TrainingSessionState = TrainingSessionState(),
+    /**
+     * The smoothed Canoe Speed in km/h for the coach-facing indicator (ADR-0018), or null when
+     * there is no usable GPS fix. Display only — the spoken call-out is broadcast separately.
+     */
+    val canoeSpeedKmh: Float? = null
 ) {
     val connectedDevicesCount: Int = devices.count { it.status == DeviceStatus.Connected }
 
