@@ -63,10 +63,14 @@ class MainActivity : ComponentActivity() {
         val sessionRepository = SessionRepository(database.sessionDao())
         val programmeRepository = com.orotrain.oro.data.ProgrammeRepository(filesDir)
 
+        // GPS speed provider for Canoe Speed (ADR-0018); start() is a safe no-op until
+        // ACCESS_FINE_LOCATION is granted.
+        val speedProvider = com.orotrain.oro.location.GpsSpeedProvider(applicationContext)
+
         // Create ViewModel with BleManager and SessionRepository
         viewModel = ViewModelProvider(
             this,
-            MainViewModelFactory(bleManager, sessionRepository, programmeRepository)
+            MainViewModelFactory(bleManager, sessionRepository, programmeRepository, speedProvider)
         )[MainViewModel::class.java]
 
         // Check and request permissions
@@ -113,7 +117,9 @@ class MainActivity : ComponentActivity() {
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             listOf(
                 Manifest.permission.BLUETOOTH_SCAN,
-                Manifest.permission.BLUETOOTH_CONNECT
+                Manifest.permission.BLUETOOTH_CONNECT,
+                // Canoe Speed GPS (ADR-0018): runtime location prompt on all versions.
+                Manifest.permission.ACCESS_FINE_LOCATION
             )
         } else {
             listOf(
@@ -133,12 +139,13 @@ class MainActivity : ComponentActivity() {
 class MainViewModelFactory(
     private val bleManager: BleManager,
     private val sessionRepository: SessionRepository,
-    private val programmeRepository: com.orotrain.oro.data.ProgrammeRepository
+    private val programmeRepository: com.orotrain.oro.data.ProgrammeRepository,
+    private val speedProvider: com.orotrain.oro.location.SpeedProvider
 ) : ViewModelProvider.Factory {
     @Suppress("UNCHECKED_CAST")
     override fun <T : ViewModel> create(modelClass: Class<T>): T {
         if (modelClass.isAssignableFrom(MainViewModel::class.java)) {
-            return MainViewModel(bleManager, sessionRepository, programmeRepository) as T
+            return MainViewModel(bleManager, sessionRepository, programmeRepository, speedProvider) as T
         }
         throw IllegalArgumentException("Unknown ViewModel class")
     }
