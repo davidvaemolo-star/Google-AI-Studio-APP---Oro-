@@ -114,6 +114,36 @@ class StrokeProgressionTest {
         assertEquals(null, offTenth.checkPaceTargetSpm)
     }
 
+    // --- Canoe Speed announce (ADR-0018) ---
+
+    @Test fun `announces speed on the third-to-last finish of a High set`() {
+        val zone = Zone(strokes = 10, sets = 2, level = ZoneLevel.High)
+        // currentStroke 7 -> newStroke 8 == strokes(10) - 2
+        val session = TrainingSessionState(currentStroke = 7, currentSet = 1)
+        val result = computeStrokeProgression(session, zone, listOf(zone), strokeTimestamp = 1000)
+        assertTrue(result.announceSpeed)
+    }
+
+    @Test fun `does not announce on other strokes of a High set`() {
+        val zone = Zone(strokes = 10, sets = 2, level = ZoneLevel.High)
+        val session = TrainingSessionState(currentStroke = 5, currentSet = 1) // newStroke 6
+        assertFalse(computeStrokeProgression(session, zone, listOf(zone), 1000).announceSpeed)
+    }
+
+    @Test fun `does not announce in Low or Medium zones`() {
+        val low = Zone(strokes = 10, sets = 1, level = ZoneLevel.Low)
+        val med = Zone(strokes = 10, sets = 1, level = ZoneLevel.Medium)
+        val session = TrainingSessionState(currentStroke = 7, currentSet = 1) // newStroke 8
+        assertFalse(computeStrokeProgression(session, low, listOf(low), 1000).announceSpeed)
+        assertFalse(computeStrokeProgression(session, med, listOf(med), 1000).announceSpeed)
+    }
+
+    @Test fun `skips the announce on a High set shorter than three strokes`() {
+        val zone = Zone(strokes = 2, sets = 1, level = ZoneLevel.High)
+        val s0 = TrainingSessionState(currentStroke = 0, currentSet = 1) // newStroke 1
+        assertFalse(computeStrokeProgression(s0, zone, listOf(zone), 1000).announceSpeed)
+    }
+
     // --- SPM helper ---
 
     @Test

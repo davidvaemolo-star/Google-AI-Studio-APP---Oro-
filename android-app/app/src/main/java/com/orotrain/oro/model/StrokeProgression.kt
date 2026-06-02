@@ -24,7 +24,9 @@ data class StrokeProgression(
     val audioCues: List<SessionAudioCue> = emptyList(),
     val checkPaceTargetSpm: Int? = null,
     val reconfigureZone: Boolean = false,
-    val sessionComplete: Boolean = false
+    val sessionComplete: Boolean = false,
+    /** True on the Pacer's 3rd-to-last Finish of a High set — speak the Canoe Speed (ADR-0018). */
+    val announceSpeed: Boolean = false
 )
 
 /**
@@ -60,13 +62,18 @@ fun computeStrokeProgression(
 
     // Still mid-set: just advance the stroke counter
     if (newStroke < currentZone.strokes) {
+        // Canoe Speed call-out: only in High zones, on the 3rd-to-last Finish (2 strokes remain).
+        // Sets < 3 strokes never match (strokes - 2 < 1), so they are skipped (ADR-0018).
+        val announceSpeed = currentZone.level == ZoneLevel.High &&
+            newStroke == currentZone.strokes - 2
         return StrokeProgression(
             session = session.copy(
                 currentStroke = newStroke,
                 recentStrokeTimestamps = updatedTimestamps,
                 currentSpm = calculatedSpm
             ),
-            checkPaceTargetSpm = checkPace
+            checkPaceTargetSpm = checkPace,
+            announceSpeed = announceSpeed
         )
     }
 
