@@ -144,6 +144,13 @@ class StrokeProgressionTest {
         assertFalse(computeStrokeProgression(s0, zone, listOf(zone), 1000).announceSpeed)
     }
 
+    @Test fun `does not announce on the second-to-last finish of a High set`() {
+        val zone = Zone(strokes = 10, sets = 2, level = ZoneLevel.High)
+        // currentStroke 8 -> newStroke 9 == strokes - 1 (one too late, still mid-set)
+        val session = TrainingSessionState(currentStroke = 8, currentSet = 1)
+        assertFalse(computeStrokeProgression(session, zone, listOf(zone), 1000).announceSpeed)
+    }
+
     // --- SPM helper ---
 
     @Test
