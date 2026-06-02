@@ -37,4 +37,10 @@ class CanoeSpeedTest {
         s.addSample(timeMs = 1000, kmh = 15.0f)
         assertNull(s.smoothed(nowMs = 5000))     // 4 s later, GPS lost -> no fix
     }
+
+    @Test fun `a sample exactly at the window edge is kept`() {
+        val s = SpeedSmoother(windowMs = 1500)
+        s.addSample(timeMs = 1000, kmh = 13.0f)
+        assertEquals(13.0f, s.smoothed(nowMs = 2500)!!, 0.001f)  // gap == windowMs, not older
+    }
 }

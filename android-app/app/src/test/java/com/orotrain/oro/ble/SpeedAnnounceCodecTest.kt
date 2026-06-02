@@ -16,8 +16,9 @@ class SpeedAnnounceCodecTest {
     }
 
     @Test fun `rounds to one decimal`() {
-        val bytes = SpeedAnnounceCodec.encode(speedKmh = 9.04f, startDelayMs = 0, volume = 100)
-        assertEquals(90, (bytes[0].toInt() and 0xFF))    // 9.0 -> 90 tenths
+        // 14.35 km/h -> 143.5 tenths; roundToInt() -> 144 (truncation would give 143)
+        val bytes = SpeedAnnounceCodec.encode(speedKmh = 14.35f, startDelayMs = 0, volume = 100)
+        assertEquals(144, (bytes[0].toInt() and 0xFF))
     }
 
     @Test fun `clamps speed above the speakable maximum`() {
