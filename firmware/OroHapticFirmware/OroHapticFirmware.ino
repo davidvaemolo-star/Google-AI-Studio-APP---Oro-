@@ -109,6 +109,7 @@ AudioI2S audioPlayer;
 #define FSR_DATA_CHAR_UUID          "12340008-1234-5678-1234-56789abcdef0"  // Notify - FSR force data
 // 12340009 reserved (LED control removed - ADR-0009)
 #define ROLLCALL_CONTROL_CHAR_UUID  "1234000A-1234-5678-1234-56789abcdef0"  // Write - end-of-session Crew Roll-Call (ADR-0016)
+#define SPEED_ANNOUNCE_CHAR_UUID    "1234000B-1234-5678-1234-56789abcdef0"  // Write - spoken Canoe Speed (ADR-0018)
 
 // Standard Battery Service
 #define BATTERY_SERVICE_UUID        "180F"
@@ -160,6 +161,7 @@ BLECharacteristic fsrDataChar = BLECharacteristic(FSR_DATA_CHAR_UUID);
 // LOAD: [0x01][crewRating][seatCount][canoe,seat|pacerBit,score] x N   (BLE_PROTOCOL §1.10)
 // PLAY: [0x02][startDelay x10ms][volume]
 BLECharacteristic rollCallControlChar = BLECharacteristic(ROLLCALL_CONTROL_CHAR_UUID);
+BLECharacteristic speedAnnounceChar = BLECharacteristic(SPEED_ANNOUNCE_CHAR_UUID);
 
 // ============================================================================
 // CREW ROLL-CALL (ADR-0016)
@@ -217,6 +219,35 @@ const uint16_t ROLLCALL_FALLBACK_HZ[ROLLCALL_CLIP_COUNT] = {
   1000, 1100, 1200, 1300, 1400, 1500,  // seat 1-6
   200,  250                            // canoe 1-2
 };
+
+// --- Canoe Speed clips (ADR-0018). Spoken number words for "<whole> point <decimal>" km/h. ---
+// 21–29 are composed as CLIP_NUM_TWENTY + ones; the Android codec clamps speed to 29.9 so no
+// "thirty" clip is ever needed (BLE_PROTOCOL §1.11).
+enum SpeedClip {
+  CLIP_NUM_0, CLIP_NUM_1, CLIP_NUM_2, CLIP_NUM_3, CLIP_NUM_4, CLIP_NUM_5,
+  CLIP_NUM_6, CLIP_NUM_7, CLIP_NUM_8, CLIP_NUM_9, CLIP_NUM_10, CLIP_NUM_11,
+  CLIP_NUM_12, CLIP_NUM_13, CLIP_NUM_14, CLIP_NUM_15, CLIP_NUM_16, CLIP_NUM_17,
+  CLIP_NUM_18, CLIP_NUM_19, CLIP_NUM_20,
+  CLIP_POINT,
+  SPEED_CLIP_COUNT
+};
+
+// Ext-flash ids start above the Roll-Call block (0x30 + 20 clips). 0x50 leaves headroom.
+#define SPEED_CLIP_EXT_BASE 0x50
+
+// Fallback tone (Hz) per speed clip, in SpeedClip order. Used only when the flash clip is absent.
+const uint16_t SPEED_FALLBACK_HZ[SPEED_CLIP_COUNT] = {
+  300, 350, 400, 450, 500, 550, 600, 650, 700, 750,   // 0-9
+  800, 850, 900, 950, 1000, 1050, 1100, 1150, 1200, 1250, // 10-19
+  1300,                                                // 20
+  150                                                  // point
+};
+
+// Pending Canoe Speed playback (mirrors rollCallPlay* scheduling).
+bool speedPlayScheduled = false;
+uint32_t speedPlayAtMs = 0;
+uint8_t speedPlayVolume = 100;
+uint16_t speedPlayTenths = 0;   // km/h × 10
 
 // ============================================================================
 // DEVICE STATE MANAGEMENT
@@ -669,6 +700,12 @@ bool initializeBLE() {
   rollCallControlChar.setWriteCallback(onRollCallControlWrite);
   rollCallControlChar.begin();
 
+  speedAnnounceChar.setProperties(CHR_PROPS_WRITE | CHR_PROPS_WRITE_WO_RESP);
+  speedAnnounceChar.setPermission(SECMODE_OPEN, SECMODE_OPEN);
+  speedAnnounceChar.setMaxLen(4);  // speed LE (2) + startDelay (1) + volume (1)
+  speedAnnounceChar.setWriteCallback(onSpeedAnnounceWrite);
+  speedAnnounceChar.begin();
+
   // FSR Data Characteristic (Notify)
   fsrDataChar.setProperties(CHR_PROPS_NOTIFY);
   fsrDataChar.setPermission(SECMODE_OPEN, SECMODE_NO_ACCESS);
@@ -723,6 +760,12 @@ void loop() {
   if (rollCallPlayScheduled && (int32_t)(millis() - rollCallPlayAtMs) >= 0) {
     rollCallPlayScheduled = false;
     speakRollCall(rollCallPlayVolume);
+  }
+
+  // Canoe Speed announce: same delayed-play scheme so all paddles speak together (ADR-0018).
+  if (speedPlayScheduled && (int32_t)(millis() - speedPlayAtMs) >= 0) {
+    speedPlayScheduled = false;
+    speakCanoeSpeed(speedPlayTenths, speedPlayVolume);
   }
 
   // Check for serial commands
@@ -1423,6 +1466,37 @@ void playCanoeClip(uint8_t canoe, uint8_t volume) {
   else if (canoe == 2) playRollCallClip(CLIP_CANOE_2, volume);
 }
 
+// Plays one speed clip from QSPI flash, or a fallback tone if the blob isn't flashed (ADR-0018).
+void playSpeedClip(uint8_t clipId, uint8_t volume) {
+  if (clipId >= SPEED_CLIP_COUNT) return;
+  uint8_t extId = SPEED_CLIP_EXT_BASE + clipId;
+  if (!externalAudio.playClip(extId, volume, audioPlayer)) {
+    audioPlayer.playTone(SPEED_FALLBACK_HZ[clipId], 180, volume);  // blob not flashed → beep
+  }
+  delay(40);  // small gap between words
+}
+
+// Speaks a whole-number 0–29 as words: 0–20 are single clips; 21–29 = "twenty" + ones (ADR-0018).
+void playWholeNumber(uint8_t n, uint8_t volume) {
+  if (n <= 20) {
+    playSpeedClip((uint8_t)(CLIP_NUM_0 + n), volume);
+  } else if (n <= 29) {
+    playSpeedClip(CLIP_NUM_20, volume);
+    playSpeedClip((uint8_t)(CLIP_NUM_0 + (n - 20)), volume);
+  }
+  // n >= 30 never occurs: the phone clamps to 29.9 (BLE_PROTOCOL §1.11).
+}
+
+// Speaks the stored Canoe Speed as "<whole> point <decimal>" km/h (bare number, no unit) — ADR-0018.
+void speakCanoeSpeed(uint16_t tenths, uint8_t volume) {
+  uint8_t whole = (uint8_t)(tenths / 10);
+  uint8_t dec   = (uint8_t)(tenths % 10);
+  Serial.print("Speaking Canoe Speed: "); Serial.print(whole); Serial.print("."); Serial.println(dec);
+  playWholeNumber(whole, volume);
+  playSpeedClip(CLIP_POINT, volume);
+  playSpeedClip((uint8_t)(CLIP_NUM_0 + dec), volume);  // single decimal digit 0–9
+}
+
 // Speaks the whole loaded roster: "team sync <rating>", then each seat in order.
 void speakRollCall(uint8_t volume) {
   if (!rollCallRoster.loaded) return;
@@ -1499,6 +1573,20 @@ void onRollCallControlWrite(uint16_t conn_hdl, BLECharacteristic* chr, uint8_t* 
       Serial.print("Unknown roll-call command: 0x"); Serial.println(cmd, HEX);
       break;
   }
+}
+
+// Speed Announce write (BLE_PROTOCOL §1.11, ADR-0018): store the speed and schedule unison playback.
+// Byte layout: [speed×10 LSB, speed×10 MSB, startDelay/10, volume]. Same delayed-play scheme as
+// Roll-Call PLAY so all paddles speak together.
+void onSpeedAnnounceWrite(uint16_t conn_hdl, BLECharacteristic* chr, uint8_t* data, uint16_t len) {
+  if (len < 4) { Serial.println("Speed Announce write too short"); return; }
+  speedPlayTenths = (uint16_t)data[0] | ((uint16_t)data[1] << 8);
+  uint16_t delayMs = (uint16_t)data[2] * 10;
+  speedPlayVolume = data[3];
+  speedPlayAtMs = millis() + delayMs;
+  speedPlayScheduled = true;
+  Serial.print("Speed Announce scheduled: tenths="); Serial.print(speedPlayTenths);
+  Serial.print(" delayMs="); Serial.println(delayMs);
 }
 
 // ============================================================================
