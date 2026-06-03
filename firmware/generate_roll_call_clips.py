@@ -55,6 +55,31 @@ CLIPS = [
     ("session_standby",              "stand by"),
     ("session_complete",             "session complete"),
     ("session_standby_for_results",  "stand by for results"),
+    # Canoe Speed number words (ADR-0018). Composed at runtime into "<whole> point <decimal>" km/h.
+    # Order is load-bearing: it must match the SpeedClip enum in OroHapticFirmware.ino and the
+    # 0x50+ ids in build_audio_blob.py.
+    ("spd_0",     "zero"),
+    ("spd_1",     "one"),
+    ("spd_2",     "two"),
+    ("spd_3",     "three"),
+    ("spd_4",     "four"),
+    ("spd_5",     "five"),
+    ("spd_6",     "six"),
+    ("spd_7",     "seven"),
+    ("spd_8",     "eight"),
+    ("spd_9",     "nine"),
+    ("spd_10",    "ten"),
+    ("spd_11",    "eleven"),
+    ("spd_12",    "twelve"),
+    ("spd_13",    "thirteen"),
+    ("spd_14",    "fourteen"),
+    ("spd_15",    "fifteen"),
+    ("spd_16",    "sixteen"),
+    ("spd_17",    "seventeen"),
+    ("spd_18",    "eighteen"),
+    ("spd_19",    "nineteen"),
+    ("spd_20",    "twenty"),
+    ("spd_point", "point"),
 ]
 
 

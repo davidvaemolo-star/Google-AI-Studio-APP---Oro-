@@ -56,6 +56,30 @@ PROMPTS = [
     ("session_standby",              0x14),
     ("session_complete",             0x15),
     ("session_standby_for_results",  0x16),
+    # Canoe Speed number words (ADR-0018). ext id = SPEED_CLIP_EXT_BASE(0x50) + SpeedClip index;
+    # order must match the SpeedClip enum in OroHapticFirmware.ino.
+    ("spd_0",     0x50),
+    ("spd_1",     0x51),
+    ("spd_2",     0x52),
+    ("spd_3",     0x53),
+    ("spd_4",     0x54),
+    ("spd_5",     0x55),
+    ("spd_6",     0x56),
+    ("spd_7",     0x57),
+    ("spd_8",     0x58),
+    ("spd_9",     0x59),
+    ("spd_10",    0x5A),
+    ("spd_11",    0x5B),
+    ("spd_12",    0x5C),
+    ("spd_13",    0x5D),
+    ("spd_14",    0x5E),
+    ("spd_15",    0x5F),
+    ("spd_16",    0x60),
+    ("spd_17",    0x61),
+    ("spd_18",    0x62),
+    ("spd_19",    0x63),
+    ("spd_20",    0x64),
+    ("spd_point", 0x65),
 ]
 
 HEADER_SIZE = 12              # magic+version+count+reserved
