@@ -127,15 +127,17 @@ FFMPEG = find_ffmpeg()
 
 
 def mp3_to_wav_16k(mp3_path, wav_path):
-    """MP3 -> 16 kHz mono 16-bit WAV, wind-optimized for the paddle's small speaker (ADR-0018):
+    """MP3 -> 16 kHz mono 16-bit WAV, tuned for the paddle's small speaker (ADR-0018):
     high-pass at 110 Hz (drop sub-bass rumble without clipping the female fundamental),
-    +5 dB presence at 3 kHz (consonant clarity),
-    leading/trailing silence trimmed (tighter clips + smaller blob — must fit the 2 MB QSPI),
-    a slight 1.1x pace (matches the approved audition) so a set-end call-out finishes in time
-    while staying clear in wind, then loudness-maximized."""
+    then an AGGRESSIVE high-frequency lift (+6 dB presence peak at 3.5 kHz plus a +8 dB
+    high-shelf above 3.5 kHz) to counter the 1 W speaker's treble roll-off, which otherwise
+    darkens the voice toward a male timbre. Leading/trailing silence trimmed (smaller blob —
+    must fit the 2 MB QSPI), a slight 1.1x pace, then loudness-maximized. NB: clips will sound
+    bright/sharp on a PC — that is the pre-compensation; judge them on the paddle speaker."""
     af = (
         "highpass=f=110,"
-        "equalizer=f=3000:width_type=q:w=1.2:g=5,"
+        "equalizer=f=3500:width_type=q:w=1.0:g=6,"   # presence peak for consonant clarity
+        "treble=g=8:f=3500,"                          # high-shelf: counter speaker treble roll-off
         "silenceremove=start_periods=1:start_threshold=-45dB:start_silence=0.05:detection=peak,"
         "areverse,"
         "silenceremove=start_periods=1:start_threshold=-45dB:start_silence=0.05:detection=peak,"
