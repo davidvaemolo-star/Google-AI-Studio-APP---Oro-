@@ -7,12 +7,14 @@ These short clips are stitched at runtime on the device (e.g. "team sync good. S
 or "fourteen point three"). They live on the external QSPI flash, packed by build_audio_blob.py
 — NOT in the firmware image.
 
-Voice: Microsoft **edge-tts** neural voice (en-US-JennyNeural, female). Chosen over gTTS because
-gTTS gives no control over the voice; a clear, higher-pitched female voice carries better over
-wind on the water (ADR-0018).
+Voice: Microsoft **edge-tts** neural voice (en-US-AriaNeural, female, ~225 Hz). Chosen over gTTS
+(no voice control) and over the lower JennyNeural (~168 Hz, which read as male on the small paddle
+speaker). A higher-pitched female voice reads unmistakably female and carries better over wind
+on the water (ADR-0018).
 
-Pipeline: edge-tts -> ffmpeg -> 16 kHz mono 16-bit WAV, **wind-optimized** (high-pass at 180 Hz to
-drop sub-bass rumble, +5 dB presence lift at 3 kHz for consonant clarity, loudness-maximized),
+Pipeline: edge-tts -> ffmpeg -> 16 kHz mono 16-bit WAV, **wind-optimized** (high-pass at 110 Hz to
+drop sub-bass rumble without clipping the female fundamental, +5 dB presence lift at 3 kHz for
+consonant clarity, loudness-maximized),
 written to OroHapticFirmware/voice_prompts_raw/. 16 kHz mono 16-bit is the flash's native format.
 
 Requires: pip install edge-tts ; and an ffmpeg binary (local firmware/ffmpeg.exe, the
@@ -48,7 +50,7 @@ if os.environ.get("ORO_TTS_INSECURE_SSL"):
     ssl.create_default_context = _unverified_ctx
     print("WARNING: ORO_TTS_INSECURE_SSL set — TLS verification disabled for edge-tts fetch.")
 
-VOICE = "en-US-JennyNeural"  # female neural voice; clear over wind (ADR-0018)
+VOICE = "en-US-AriaNeural"  # higher-pitched female neural voice (~225 Hz); clearly female + cuts wind (ADR-0018)
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 OUT_DIR = os.path.join(SCRIPT_DIR, "OroHapticFirmware", "voice_prompts_raw")
@@ -126,12 +128,13 @@ FFMPEG = find_ffmpeg()
 
 def mp3_to_wav_16k(mp3_path, wav_path):
     """MP3 -> 16 kHz mono 16-bit WAV, wind-optimized for the paddle's small speaker (ADR-0018):
-    high-pass at 180 Hz (drop sub-bass rumble), +5 dB presence at 3 kHz (consonant clarity),
+    high-pass at 110 Hz (drop sub-bass rumble without clipping the female fundamental),
+    +5 dB presence at 3 kHz (consonant clarity),
     leading/trailing silence trimmed (tighter clips + smaller blob — must fit the 2 MB QSPI),
     a slight 1.1x pace (matches the approved audition) so a set-end call-out finishes in time
     while staying clear in wind, then loudness-maximized."""
     af = (
-        "highpass=f=180,"
+        "highpass=f=110,"
         "equalizer=f=3000:width_type=q:w=1.2:g=5,"
         "silenceremove=start_periods=1:start_threshold=-45dB:start_silence=0.05:detection=peak,"
         "areverse,"
