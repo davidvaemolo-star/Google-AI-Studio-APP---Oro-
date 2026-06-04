@@ -131,9 +131,11 @@ def mp3_to_wav_16k(mp3_path, wav_path):
     high-pass at 110 Hz (drop sub-bass rumble without clipping the female fundamental),
     then an AGGRESSIVE high-frequency lift (+6 dB presence peak at 3.5 kHz plus a +8 dB
     high-shelf above 3.5 kHz) to counter the 1 W speaker's treble roll-off, which otherwise
-    darkens the voice toward a male timbre. Leading/trailing silence trimmed (smaller blob —
-    must fit the 2 MB QSPI), a slight 1.1x pace, then loudness-maximized. NB: clips will sound
-    bright/sharp on a PC — that is the pre-compensation; judge them on the paddle speaker."""
+    darkens the voice toward a male timbre. Then a +4-semitone formant-aware pitch lift
+    (rubberband) so the fundamental reads clearly female despite the speaker. Leading/trailing
+    silence trimmed (smaller blob — must fit the 2 MB QSPI), a slight 1.1x pace, then
+    loudness-maximized. NB: clips sound bright/high on a PC — that is the pre-compensation for
+    the paddle speaker; judge them on the paddle, not the PC."""
     af = (
         "highpass=f=110,"
         "equalizer=f=3500:width_type=q:w=1.0:g=6,"   # presence peak for consonant clarity
@@ -142,6 +144,7 @@ def mp3_to_wav_16k(mp3_path, wav_path):
         "areverse,"
         "silenceremove=start_periods=1:start_threshold=-45dB:start_silence=0.05:detection=peak,"
         "areverse,"
+        "rubberband=pitch=1.26,"                      # +~4 semitones (formant-aware) -> clearly female through the speaker
         "atempo=1.10,"
         "loudnorm=I=-13:TP=-1.5:LRA=11"
     )
