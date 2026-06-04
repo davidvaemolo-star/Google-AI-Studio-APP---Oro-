@@ -1,28 +1,54 @@
 #!/usr/bin/env python3
 """
-Generate the 20 Crew Roll-Call voice clips (ADR-0016) for the Oro Haptic Paddle.
+Generate the Oro Haptic Paddle voice clips: the 20 Crew Roll-Call clips (ADR-0016), the 3
+session prompts (ADR-0017), and the 22 Canoe Speed number words (ADR-0018).
 
-These short clips are stitched at runtime into the spoken end-of-session roll-call
-("team sync good. Seat one, pacer, power strong. ..."). They live on the device's
-external QSPI flash, packed by build_audio_blob.py — NOT in the firmware image.
+These short clips are stitched at runtime on the device (e.g. "team sync good. Seat one ...",
+or "fourteen point three"). They live on the external QSPI flash, packed by build_audio_blob.py
+— NOT in the firmware image.
 
-Pipeline: gTTS (free Google TTS, female US voice) -> ffmpeg -> 16 kHz mono 16-bit WAV,
-sped up 1.3x and loudness-normalised, written to OroHapticFirmware/voice_prompts_raw/.
+Voice: Microsoft **edge-tts** neural voice (en-US-JennyNeural, female). Chosen over gTTS because
+gTTS gives no control over the voice; a clear, higher-pitched female voice carries better over
+wind on the water (ADR-0018).
 
-16 kHz mono 16-bit is the external-flash native format, so build_audio_blob.py can pack
-the WAVs directly without re-encoding.
+Pipeline: edge-tts -> ffmpeg -> 16 kHz mono 16-bit WAV, **wind-optimized** (high-pass at 180 Hz to
+drop sub-bass rumble, +5 dB presence lift at 3 kHz for consonant clarity, loudness-maximized),
+written to OroHapticFirmware/voice_prompts_raw/. 16 kHz mono 16-bit is the flash's native format.
 
-Requires: pip install gtts ; and an ffmpeg binary (local firmware/ffmpeg.exe, or the
-`imageio-ffmpeg` pip package, or ffmpeg on PATH).
+Requires: pip install edge-tts ; and an ffmpeg binary (local firmware/ffmpeg.exe, the
+`imageio-ffmpeg` pip package, or ffmpeg on PATH). edge-tts needs network access to Microsoft.
 
     cd firmware
     python generate_roll_call_clips.py
+
+If your network intercepts TLS (corporate proxy) and edge-tts fails cert verification, run with
+ORO_TTS_INSECURE_SSL=1 to relax verification for the TTS fetch only.
 """
+import asyncio
 import os
+import ssl
 import subprocess
 import sys
 import wave
-from gtts import gTTS
+
+import certifi
+import edge_tts
+
+# edge-tts (aiohttp) uses the system CA store. Point it at certifi's bundle so it verifies on most
+# machines. On a TLS-intercepting proxy that still fails, set ORO_TTS_INSECURE_SSL=1 to relax
+# verification for the TTS fetch only (the clips are public audio; low risk).
+os.environ.setdefault("SSL_CERT_FILE", certifi.where())
+if os.environ.get("ORO_TTS_INSECURE_SSL"):
+    _orig_ctx = ssl.create_default_context
+    def _unverified_ctx(*a, **k):
+        c = _orig_ctx(*a, **k)
+        c.check_hostname = False
+        c.verify_mode = ssl.CERT_NONE
+        return c
+    ssl.create_default_context = _unverified_ctx
+    print("WARNING: ORO_TTS_INSECURE_SSL set — TLS verification disabled for edge-tts fetch.")
+
+VOICE = "en-US-JennyNeural"  # female neural voice; clear over wind (ADR-0018)
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 OUT_DIR = os.path.join(SCRIPT_DIR, "OroHapticFirmware", "voice_prompts_raw")
@@ -99,11 +125,25 @@ FFMPEG = find_ffmpeg()
 
 
 def mp3_to_wav_16k(mp3_path, wav_path):
-    """MP3 -> 16 kHz mono 16-bit WAV, sped up 1.3x and loudness-normalised."""
+    """MP3 -> 16 kHz mono 16-bit WAV, wind-optimized for the paddle's small speaker (ADR-0018):
+    high-pass at 180 Hz (drop sub-bass rumble), +5 dB presence at 3 kHz (consonant clarity),
+    leading/trailing silence trimmed (tighter clips + smaller blob — must fit the 2 MB QSPI),
+    a slight 1.1x pace (matches the approved audition) so a set-end call-out finishes in time
+    while staying clear in wind, then loudness-maximized."""
+    af = (
+        "highpass=f=180,"
+        "equalizer=f=3000:width_type=q:w=1.2:g=5,"
+        "silenceremove=start_periods=1:start_threshold=-45dB:start_silence=0.05:detection=peak,"
+        "areverse,"
+        "silenceremove=start_periods=1:start_threshold=-45dB:start_silence=0.05:detection=peak,"
+        "areverse,"
+        "atempo=1.10,"
+        "loudnorm=I=-13:TP=-1.5:LRA=11"
+    )
     cmd = [
         FFMPEG, "-y", "-i", mp3_path,
         "-ar", "16000", "-ac", "1", "-sample_fmt", "s16",
-        "-af", "atempo=1.3,loudnorm=I=-16:TP=-3:LRA=11",
+        "-af", af,
         wav_path,
     ]
     r = subprocess.run(cmd, capture_output=True, text=True)
@@ -111,20 +151,19 @@ def mp3_to_wav_16k(mp3_path, wav_path):
         raise RuntimeError(f"ffmpeg failed for {mp3_path}:\n{r.stderr[-400:]}")
 
 
-def main():
+async def main():
     os.makedirs(OUT_DIR, exist_ok=True)
-    print("Crew Roll-Call clip generator (ADR-0016)")
-    print(f"  Voice : gTTS female, US accent, 1.3x")
+    print("Oro voice clip generator (ADR-0016 / 0017 / 0018)")
+    print(f"  Voice : edge-tts {VOICE} (female), wind-optimized")
     print(f"  Format: 16 kHz mono 16-bit WAV")
     print(f"  ffmpeg: {FFMPEG}")
     print(f"  Output: {OUT_DIR}\n")
 
     total_bytes = 0
     for stem, text in CLIPS:
-        tts = gTTS(text=text, lang="en", tld="us", slow=False)  # gTTS defaults to a female voice
         tmp_mp3 = os.path.join(OUT_DIR, f"{stem}_temp.mp3")
         wav_path = os.path.join(OUT_DIR, f"{stem}.wav")
-        tts.save(tmp_mp3)
+        await edge_tts.Communicate(text, VOICE).save(tmp_mp3)
         try:
             mp3_to_wav_16k(tmp_mp3, wav_path)
         finally:
@@ -142,4 +181,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
