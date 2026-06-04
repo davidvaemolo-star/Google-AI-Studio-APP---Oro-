@@ -14,7 +14,7 @@
 
 #include <Arduino.h>
 
-#define EXT_AUDIO_MAX_PROMPTS 28  // 20 Crew Roll-Call clips (ADR-0016) + 3 session prompts (ADR-0017) + headroom
+#define EXT_AUDIO_MAX_PROMPTS 64  // 20 Crew Roll-Call (ADR-0016) + 3 session (ADR-0017) + 22 Canoe Speed (ADR-0018) = 45, rounded up for headroom. Must be >= the blob's clip count or begin() rejects the whole blob.
 
 class AudioI2S;  // forward decl
 
