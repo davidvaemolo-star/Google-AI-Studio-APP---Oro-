@@ -4,7 +4,7 @@ status: accepted (builds on ADR-0017)
 
 # A live Session locks the coach to the Training screen; the only early exit is a deliberate Abort
 
-While a **Session** is live (`isActive` — Standby, Active, or Paused) the coach is **locked** to the Training screen: the bottom-navigation items (Programmes / Connection) are disabled, and the system Back gesture pops an **"End Session?"** confirmation rather than leaving. The only way out before the Zones finish is a deliberate **Abort** (the on-screen **End Session** button → confirm), which stops every device, plays a short stop cue (a brief beep + haptic on each paddle so the crew knows it stopped on purpose), and produces **no Session Outcome and no Crew Roll-Call**. The partial Session is still saved.
+From the moment the coach presses Start until the Zones finish — every live status (**Starting**, Standby, Active, Paused; false only for Idle and Completed) — the coach is **locked** to the Training screen: the bottom-navigation items (Programmes / Connection) are disabled, and the system Back gesture pops an **"End Session?"** confirmation rather than leaving. (The lock is deliberately broader than `isActive`, which excludes the brief **Starting** configuring transient — but devices are being configured over BLE during Starting, so leaving then would let the Session arm on another screen.) The only way out before the Zones finish is a deliberate **Abort** (the on-screen **End Session** button → confirm), which stops every device, plays a short stop cue (a brief beep + haptic on each paddle so the crew knows it stopped on purpose), and produces **no Session Outcome and no Crew Roll-Call**. The partial Session is still saved.
 
 ## Why
 
