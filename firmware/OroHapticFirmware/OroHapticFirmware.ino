@@ -506,6 +506,10 @@ void setup() {
   } else {
     Serial.println("WARNING: Failed to initialize I2S audio - continuing without audio");
   }
+  // Keep stroke detection alive while audio plays (ADR-0020): the audio driver calls this between
+  // chunks so prompts (set changeover, zone voice, the mid-set speed call-out) no longer make the
+  // paddle deaf to strokes.
+  audioPlayer.setServiceCallback(serviceStrokeDuringAudio);
   if (externalAudio.begin()) {
     Serial.println("External audio ready (Crew Roll-Call clips on QSPI).");
   } else {
@@ -2016,6 +2020,20 @@ void powerOff() {
 // ============================================================================
 // STROKE DETECTION AND CALIBRATION
 // ============================================================================
+
+// Called by the audio driver during playback (ADR-0020). Runs the stroke-detection pass so catches
+// during a prompt are still seen — but only while detection is enabled (so the end-of-session
+// Roll-Call, played with detection off, is unaffected), and throttled to ~4 ms so the fast playback
+// spin doesn't over-call the IMU read. Detection only emits a non-blocking BLE notify and starts no
+// audio, so there is no reentrancy back into the audio path.
+void serviceStrokeDuringAudio() {
+  if (!strokeDetection.enabled) return;
+  static unsigned long lastServiceMs = 0;
+  unsigned long now = millis();
+  if (now - lastServiceMs < 4) return;
+  lastServiceMs = now;
+  handleStrokeDetection();
+}
 
 void handleStrokeDetection() {
   // Read accelerometer data

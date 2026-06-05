@@ -430,6 +430,14 @@ void AudioI2S::swapBuffers() {
     Serial.println(currentBufferIndex);
 }
 
+void AudioI2S::setServiceCallback(void (*cb)()) {
+    serviceCb = cb;
+}
+
+void AudioI2S::serviceDuringAudio() {
+    if (serviceCb) serviceCb();
+}
+
 void AudioI2S::waitForBufferLatch() {
     // Wait for DMA to latch the buffer pointer
     uint32_t timeout = millis() + 50;
@@ -438,6 +446,7 @@ void AudioI2S::waitForBufferLatch() {
             Serial.println("ERROR: I2S TXPTRUPD timeout!");
             return;
         }
+        serviceDuringAudio();   // keep stroke detection alive between chunks (ADR-0020)
         yield();
     }
     NRF_I2S->EVENTS_TXPTRUPD = 0;
@@ -460,7 +469,12 @@ void AudioI2S::waitForFinalChunk(uint16_t sampleCount) {
     Serial.print(expectedDurationMs);
     Serial.println(" ms");
 
-    delay(expectedDurationMs + 5);  // Add small margin
+    // Serviced wait (ADR-0020): same duration as the old delay, but keep stroke detection alive.
+    uint32_t finalUntil = millis() + expectedDurationMs + 5;  // small margin
+    while ((int32_t)(millis() - finalUntil) < 0) {
+        serviceDuringAudio();
+        yield();
+    }
 }
 
 void AudioI2S::stop() {

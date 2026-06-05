@@ -110,6 +110,13 @@ public:
      */
     bool isPlaying();
 
+    /**
+     * Register a callback invoked repeatedly during blocking playback (between audio chunks), so the
+     * caller can keep time-critical work alive — here, stroke detection (ADR-0020). The callback must
+     * be cheap and must NOT start audio (no reentrancy). Pass nullptr to clear.
+     */
+    void setServiceCallback(void (*cb)());
+
 private:
     uint32_t audioBuffer0[AUDIO_BUFFER_SIZE];  // Double buffer 0
     uint32_t audioBuffer1[AUDIO_BUFFER_SIZE];  // Double buffer 1
@@ -118,6 +125,8 @@ private:
     bool initialized = false;
     bool playing = false;
     float tonePhase = 0.0f;                    // continuous sine phase across a tone's chunks (radians)
+    void (*serviceCb)() = nullptr;             // called during playback waits to keep detection alive (ADR-0020)
+    void serviceDuringAudio();                 // invokes serviceCb if set
 
     /**
      * Configure nRF52840 I2S peripheral registers
