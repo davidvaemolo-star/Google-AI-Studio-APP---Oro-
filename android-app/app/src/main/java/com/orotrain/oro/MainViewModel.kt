@@ -1107,12 +1107,15 @@ class MainViewModel(
     }
 
     fun stopTrainingSession() {
-        endOfSessionJob?.cancel()   // ADR-0019: a stray Roll-Call must never fire after a stop
-        endOfSessionJob = null
         speedProvider?.stop()
         _uiState.update { it.copy(canoeSpeedKmh = null) }   // clear the coach speed indicator (ADR-0018)
         val state = _uiState.value
         if (!state.trainingSession.isActive) return
+        // Cancel any pending end-of-session sequence so a stray Roll-Call can't fire after this stop
+        // (ADR-0019). Placed INSIDE the isActive guard so a redundant call during the post-completion
+        // wind-down can't cancel a legitimately-running Roll-Call.
+        endOfSessionJob?.cancel()
+        endOfSessionJob = null
         synchronized(syncLock) {
             sessionCatchSamples.clear()
             lastDeviceTimestampMs.clear()
@@ -1163,8 +1166,8 @@ class MainViewModel(
     /**
      * Abort (ADR-0019): the coach ends the Session early via "End Session". Plays a short stop cue
      * on every paddle so the crew knows it stopped on purpose, then runs the clean stop — which
-     * saves the partial Session but produces NO Session Outcome and NO Crew Roll-Call. The cue lives
-     * here, on the Abort path only, so natural completion never plays it.
+     * saves the partial Session to the database but produces NO Session Outcome (no Sync Rating) and
+     * NO Crew Roll-Call. The cue lives here, on the Abort path only, so natural completion never plays it.
      */
     fun abortTrainingSession() {
         if (!_uiState.value.trainingSession.isActive) return
