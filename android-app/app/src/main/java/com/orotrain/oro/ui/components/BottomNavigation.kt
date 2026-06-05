@@ -20,6 +20,7 @@ fun BottomNavigationBar(
     onSelect: (AppDestination) -> Unit,
     connectedCount: Int,
     maxDevices: Int,
+    locked: Boolean = false,
     modifier: Modifier = Modifier
 ) {
     NavigationBar(
@@ -29,6 +30,7 @@ fun BottomNavigationBar(
         NavigationBarItem(
             selected = current == AppDestination.Programmes,
             onClick = { onSelect(AppDestination.Programmes) },
+            enabled = !locked,
             icon = {
                 androidx.compose.material3.Icon(
                     imageVector = Icons.Rounded.FolderOpen,
@@ -52,6 +54,7 @@ fun BottomNavigationBar(
         NavigationBarItem(
             selected = current == AppDestination.Connection,
             onClick = { onSelect(AppDestination.Connection) },
+            enabled = !locked,
             icon = {
                 androidx.compose.material3.Icon(
                     imageVector = Icons.Rounded.Bluetooth,
