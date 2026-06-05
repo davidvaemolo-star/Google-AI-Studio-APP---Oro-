@@ -103,4 +103,12 @@ data class OroUiState(
     val canStartTraining: Boolean
         get() = !trainingSession.isActive &&
                 startChecks.filter { it.isBlocking }.all { it.isPassed }
+
+    /**
+     * True while a Session is live (Standby/Active/Paused) — the coach is locked to the Training
+     * screen and may only leave via a deliberate Abort (ADR-0019). Mirrors
+     * [TrainingSessionState.isActive]; named separately so call sites read as intent.
+     */
+    val isNavigationLocked: Boolean
+        get() = trainingSession.isActive
 }
