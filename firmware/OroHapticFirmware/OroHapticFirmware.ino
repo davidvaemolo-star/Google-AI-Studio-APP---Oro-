@@ -306,7 +306,7 @@ enum HapticPattern {
 // Audio Events
 enum AudioEvent {
   // Tones (firmware-generated, no pre-recorded audio)
-  AUDIO_POWER_ON            = 0x01,  // "Oro" voice on boot
+  AUDIO_POWER_ON            = 0x01,  // boot greeting — now a synthesized chime (playPowerOnChime), not a clip
   AUDIO_SESSION_START_BEEP  = 0x02,  // 3 short + 1 long go-beep
   AUDIO_SET_CHANGEOVER_BEEP = 0x03,  // Single beep: set complete
 
@@ -528,8 +528,8 @@ void setup() {
   delay(10);  // Let pullup settle before the startup gate samples
 
   // Wake/boot greeting: every cold start (whether from USB plug-in or System OFF wake)
-  // plays "Oro" so the button press is acknowledged audibly before BLE comes up.
-  playAudioEvent(AUDIO_POWER_ON, 100);
+  // plays a generic power-on chime so the button press is acknowledged audibly before BLE comes up.
+  playPowerOnChime();
 
   // Initialize battery monitoring
   pinMode(BATTERY_PIN, INPUT);
@@ -1323,6 +1323,29 @@ void playSessionStartBeeps() {
   audioPlayer.playTone(1320, 500, 100);
 }
 
+// Power-on chime (replaces the spoken "Oro"): an ascending pulse-pulse-tone — two short notes
+// then a higher sustained one (587 -> 698 -> 880 Hz, "B7"). Wordless and generic, sits in the
+// band the 1 W speaker projects best so it carries over wind. Pure synthesized tones, so it needs
+// no audio clip on flash. This is the wake/boot greeting (ADR-0011).
+void playPowerOnChime() {
+  audioPlayer.playTone(587, 90, 95);    // D5 — first pulse
+  delay(60);
+  audioPlayer.playTone(698, 90, 95);    // F5 — second pulse
+  delay(60);
+  audioPlayer.playTone(880, 300, 100);  // A5 — sustained resolve
+}
+
+// Power-off cue (mirror of the boot chime): a DESCENDING buzz paired with a long haptic, so the
+// crew both hears and feels the paddle shutting down. Notes fall 784 -> 587 -> 440 Hz, ending low
+// and sustained. The 750ms haptic is fired first so it buzzes through the whole tone sequence.
+// Must run BEFORE the amp is muted in powerOff() (a muted amp = silence). Pure tones, no clip.
+void playPowerOffBuzz() {
+  playHapticEffect(PATTERN_ALERT_750MS, 100);  // long buzz felt in the hand, overlaps the tones
+  audioPlayer.playTone(784, 110, 95);    // G5
+  audioPlayer.playTone(587, 110, 95);    // D5
+  audioPlayer.playTone(440, 320, 100);   // A4 — low, sustained "power down"
+}
+
 // Single short beep signals a set has completed and the next begins.
 void playSetChangeover() {
   audioPlayer.playTone(660, 80, 80);
@@ -1347,7 +1370,7 @@ struct FlashPrompt {
 };
 
 static const FlashPrompt FLASH_PROMPTS[] = {
-  { AUDIO_POWER_ON,       audio_prompt_power_on,       audio_prompt_power_on_SIZE,       "power on (Oro)" },
+  // AUDIO_POWER_ON is no longer a clip — boot plays the synthesized playPowerOnChime() instead.
   { AUDIO_LAST_SET,       audio_prompt_last_set,       audio_prompt_last_set_SIZE,       "last set" },
   { AUDIO_NEXT_SET_LOW,   audio_prompt_next_set_low,   audio_prompt_next_set_low_SIZE,   "next set low" },
   { AUDIO_NEXT_SET_MEDIUM,audio_prompt_next_set_medium,audio_prompt_next_set_medium_SIZE,"next set medium" },
@@ -1945,6 +1968,10 @@ void handlePowerButton() {
 
 void powerOff() {
   Serial.println("=== Powering OFF (System OFF) ===");
+
+  // Shutdown cue: descending buzz + long haptic so the crew hears and feels the power-off.
+  // Done first, while the amp is still enabled — muting it below would silence the tones.
+  playPowerOffBuzz();
 
   // Visually confirm shutdown — extinguish LED before sleeping
   HwPWM0.writePin(LED_R_PIN, 0);

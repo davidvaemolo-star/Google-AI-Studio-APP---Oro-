@@ -125,7 +125,7 @@ Stroke phases: `CATCH (0x01)` → `DRIVE (0x02)` → `FINISH (0x03)` → `RECOVE
 | 0x06 | `AUDIO_SESSION_COMPLETE` | Session complete fanfare |
 | 0x07 | `AUDIO_PAUSE` | Pause beep |
 | 0x08 | `AUDIO_RESUME` | Resume beep |
-| 0x09 | `AUDIO_POWER_ON` | Power-on "Oro" prompt |
+| 0x09 | `AUDIO_POWER_ON` | Power-on chime (synthesized tones, not a voice clip) |
 
 Audio sample rate: 32 kHz, 16-bit, stereo (mono source duplicated).
 

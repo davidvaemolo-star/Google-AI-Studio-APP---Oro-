@@ -14,25 +14,16 @@ import numpy as np
 INPUT_DIR = "voice_prompts_raw"
 OUTPUT_FILE = "audio_prompts.h"
 
-# Prompt file names (must match generate_voice_simple.py)
+# Prompt file names (must match generate_embedded_prompts.py).
+# ONLY the 5 firmware-embedded prompts live here. The 12 Session Summary clips were moved to the
+# external QSPI flash (ADR-0016, Crew Roll-Call) — embedding them too would overflow the nRF52840's
+# 1 MB internal flash. Their table slots below are nullptr (played via externalAudio.playClip).
 PROMPT_FILES = [
-    ("power_on",                  "AUDIO_POWER_ON"),
+    # power_on dropped: the boot greeting is now the synthesized playPowerOnChime() (no clip).
     ("last_set",                  "AUDIO_LAST_SET"),
     ("next_set_low",              "AUDIO_NEXT_SET_LOW"),
     ("next_set_medium",           "AUDIO_NEXT_SET_MEDIUM"),
     ("next_set_high",             "AUDIO_NEXT_SET_HIGH"),
-    ("summary_poor_light",        "AUDIO_SUMMARY_POOR_LIGHT"),
-    ("summary_poor_moderate",     "AUDIO_SUMMARY_POOR_MODERATE"),
-    ("summary_poor_strong",       "AUDIO_SUMMARY_POOR_STRONG"),
-    ("summary_poor_maximum",      "AUDIO_SUMMARY_POOR_MAXIMUM"),
-    ("summary_good_light",        "AUDIO_SUMMARY_GOOD_LIGHT"),
-    ("summary_good_moderate",     "AUDIO_SUMMARY_GOOD_MODERATE"),
-    ("summary_good_strong",       "AUDIO_SUMMARY_GOOD_STRONG"),
-    ("summary_good_maximum",      "AUDIO_SUMMARY_GOOD_MAXIMUM"),
-    ("summary_excellent_light",   "AUDIO_SUMMARY_EXCELLENT_LIGHT"),
-    ("summary_excellent_moderate","AUDIO_SUMMARY_EXCELLENT_MODERATE"),
-    ("summary_excellent_strong",  "AUDIO_SUMMARY_EXCELLENT_STRONG"),
-    ("summary_excellent_maximum", "AUDIO_SUMMARY_EXCELLENT_MAXIMUM"),
 ]
 
 def wav_to_c_array(wav_file, array_name):
@@ -151,29 +142,29 @@ struct AudioPromptInfo {
 };
 
 const AudioPromptInfo AUDIO_PROMPT_TABLE[] = {
-  {nullptr, 0},                                                                          // 0x00 unused
-  {nullptr, 0},                                                                          // 0x01 POWER_ON (accessed directly in switch)
-  {nullptr, 0},                                                                          // 0x02 SESSION_START_BEEP (tone, no buffer)
-  {nullptr, 0},                                                                          // 0x03 SET_CHANGEOVER_BEEP (tone, no buffer)
-  {audio_prompt_last_set,                  audio_prompt_last_set_SIZE},                  // 0x04
-  {audio_prompt_next_set_low,              audio_prompt_next_set_low_SIZE},              // 0x05
-  {audio_prompt_next_set_medium,           audio_prompt_next_set_medium_SIZE},           // 0x06
-  {audio_prompt_next_set_high,             audio_prompt_next_set_high_SIZE},             // 0x07
-  {audio_prompt_summary_poor_light,        audio_prompt_summary_poor_light_SIZE},        // 0x08
-  {audio_prompt_summary_poor_moderate,     audio_prompt_summary_poor_moderate_SIZE},     // 0x09
-  {audio_prompt_summary_poor_strong,       audio_prompt_summary_poor_strong_SIZE},       // 0x0A
-  {audio_prompt_summary_poor_maximum,      audio_prompt_summary_poor_maximum_SIZE},      // 0x0B
-  {audio_prompt_summary_good_light,        audio_prompt_summary_good_light_SIZE},        // 0x0C
-  {audio_prompt_summary_good_moderate,     audio_prompt_summary_good_moderate_SIZE},     // 0x0D
-  {audio_prompt_summary_good_strong,       audio_prompt_summary_good_strong_SIZE},       // 0x0E
-  {audio_prompt_summary_good_maximum,      audio_prompt_summary_good_maximum_SIZE},      // 0x0F
-  {audio_prompt_summary_excellent_light,   audio_prompt_summary_excellent_light_SIZE},   // 0x10
-  {audio_prompt_summary_excellent_moderate,audio_prompt_summary_excellent_moderate_SIZE},// 0x11
-  {audio_prompt_summary_excellent_strong,  audio_prompt_summary_excellent_strong_SIZE},  // 0x12
-  {audio_prompt_summary_excellent_maximum, audio_prompt_summary_excellent_maximum_SIZE}, // 0x13
+  {nullptr, 0},                                                       // 0x00 unused
+  {nullptr, 0},                                                       // 0x01 POWER_ON (accessed directly)
+  {nullptr, 0},                                                       // 0x02 SESSION_START_BEEP (tone)
+  {nullptr, 0},                                                       // 0x03 SET_CHANGEOVER_BEEP (tone)
+  {audio_prompt_last_set,        audio_prompt_last_set_SIZE},         // 0x04
+  {audio_prompt_next_set_low,    audio_prompt_next_set_low_SIZE},     // 0x05
+  {audio_prompt_next_set_medium, audio_prompt_next_set_medium_SIZE},  // 0x06
+  {audio_prompt_next_set_high,   audio_prompt_next_set_high_SIZE},    // 0x07
+  {nullptr, 0},  // 0x08 SUMMARY_POOR_LIGHT (external flash)
+  {nullptr, 0},  // 0x09 SUMMARY_POOR_MODERATE (external flash)
+  {nullptr, 0},  // 0x0A SUMMARY_POOR_STRONG (external flash)
+  {nullptr, 0},  // 0x0B SUMMARY_POOR_MAXIMUM (external flash)
+  {nullptr, 0},  // 0x0C SUMMARY_GOOD_LIGHT (external flash)
+  {nullptr, 0},  // 0x0D SUMMARY_GOOD_MODERATE (external flash)
+  {nullptr, 0},  // 0x0E SUMMARY_GOOD_STRONG (external flash)
+  {nullptr, 0},  // 0x0F SUMMARY_GOOD_MAXIMUM (external flash)
+  {nullptr, 0},  // 0x10 SUMMARY_EXCELLENT_LIGHT (external flash)
+  {nullptr, 0},  // 0x11 SUMMARY_EXCELLENT_MODERATE (external flash)
+  {nullptr, 0},  // 0x12 SUMMARY_EXCELLENT_STRONG (external flash)
+  {nullptr, 0},  // 0x13 SUMMARY_EXCELLENT_MAXIMUM (external flash)
 };
 
-#define AUDIO_PROMPT_COUNT 19  // = highest valid enum index; table has COUNT+1 entries (includes 0x00)
+#define AUDIO_PROMPT_COUNT 20
 
 #endif // AUDIO_PROMPTS_H
 """

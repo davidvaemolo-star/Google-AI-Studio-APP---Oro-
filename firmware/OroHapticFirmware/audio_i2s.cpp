@@ -145,54 +145,42 @@ void AudioI2S::configureI2S() {
     Serial.println(NRF_I2S->CONFIG.ALIGN);
 }
 
-void AudioI2S::generateTone(uint16_t frequency, uint16_t samples, uint8_t volume) {
-    // Clamp volume to 0-100
+void AudioI2S::generateTone(uint16_t frequency, uint16_t samples, uint8_t volume,
+                            uint32_t globalOffset, uint32_t totalSamples) {
+    // Clamp volume to 0-100, map to full-range amplitude (max int16 = 32767).
     volume = constrain(volume, 0, 100);
-
-    // Map volume to amplitude - MAXIMUM setting for loudest output
-    // Max int16_t = 32767, using FULL RANGE for maximum volume
     int16_t amplitude = map(volume, 0, 100, 0, 32767);
 
-    // Debug output for first call
-    static bool firstCall = true;
-    if (firstCall) {
-        Serial.println("\n=== AUDIO GENERATION DEBUG ===");
-        Serial.print("Volume: "); Serial.print(volume); Serial.println("%");
-        Serial.print("Target amplitude: "); Serial.println(amplitude);
-        Serial.print("Max possible: 32767 (using "); Serial.print((amplitude*100)/32767); Serial.println("%)");
-        firstCall = false;
-    }
+    // Raised-cosine fade in/out kills the click at each tone's start and end. Cap the fade at
+    // half the tone so very short tones still ramp symmetrically and never overlap.
+    uint32_t fade = TONE_FADE_SAMPLES;
+    if (totalSamples > 0 && fade > totalSamples / 2) fade = totalSamples / 2;
 
-    // Generate sine wave samples and pack as stereo (L+R identical for mono source)
-    int16_t peakSample = 0;
+    // Phase advances continuously across chunks (tonePhase persists), so there is no waveform
+    // discontinuity at the ~8ms buffer boundaries — that mid-tone phase reset was the buzz.
+    const float phaseInc = 2.0f * PI * (float)frequency / (float)SAMPLE_RATE;
+
     for (uint16_t i = 0; i < samples && i < AUDIO_BUFFER_SIZE; i++) {
-        float t = (float)i / SAMPLE_RATE;
-        float angle = 2.0 * PI * frequency * t;
-        int16_t sample = (int16_t)(amplitude * sin(angle));
+        uint32_t g = globalOffset + i;  // position within the whole tone
 
-        // Track peak for debugging
-        if (abs(sample) > abs(peakSample)) {
-            peakSample = sample;
+        float env = 1.0f;
+        if (fade > 0) {
+            if (g < fade) {
+                env = 0.5f - 0.5f * cos(PI * (float)g / (float)fade);                 // fade in
+            } else if (g >= totalSamples - fade) {
+                env = 0.5f - 0.5f * cos(PI * (float)(totalSamples - g) / (float)fade); // fade out
+            }
         }
 
-        // Pack sample for STEREO mode with RIGHT alignment
-        // Duplicate sample to both channels for compatibility
+        int16_t sample = (int16_t)(amplitude * env * sin(tonePhase));
+
+        tonePhase += phaseInc;
+        if (tonePhase >= 2.0f * PI) tonePhase -= 2.0f * PI;  // wrap to keep float precision
+
+        // Pack sample for STEREO mode (duplicate mono source to both channels).
         uint16_t sampleU16 = (uint16_t)sample;
         currentBuffer[i] = ((uint32_t)sampleU16 << 16) | sampleU16;
-
-        if (i < 4) {
-            Serial.print("Sample index ");
-            Serial.print(i);
-            Serial.print(" raw=0x");
-            Serial.print((uint16_t)sample, HEX);
-            Serial.print(" ("); Serial.print(sample); Serial.print(")");
-            Serial.print(" packed=0x");
-            Serial.println(currentBuffer[i], HEX);
-        }
     }
-
-    Serial.print("Peak sample: "); Serial.print(peakSample);
-    Serial.print(" ("); Serial.print((abs(peakSample)*100)/32767); Serial.println("% of max)");
 }
 
 void AudioI2S::playTone(uint16_t frequency, uint16_t duration_ms, uint8_t volume) {
@@ -215,15 +203,19 @@ void AudioI2S::playTone(uint16_t frequency, uint16_t duration_ms, uint8_t volume
     Serial.println(volume);
 
     playing = true;
+    tonePhase = 0.0f;                       // start each tone at zero phase (fade-in hides any jump)
+    const uint32_t toneTotalSamples = totalSamples;  // keep the full length for the envelope
+    uint32_t played = 0;                    // samples emitted so far (global offset into the tone)
 
     // Play tone in chunks with proper double buffering
     // STEREO mode: each sample uses 1 buffer word (L+R packed), so max samples = AUDIO_BUFFER_SIZE
 
     // Prepare first chunk
     uint16_t chunkSize = min(totalSamples, (uint32_t)AUDIO_BUFFER_SIZE);
-    generateTone(frequency, chunkSize, volume);
+    generateTone(frequency, chunkSize, volume, played, toneTotalSamples);
     startTransfer(chunkSize, true);  // Start I2S
     totalSamples -= chunkSize;
+    played += chunkSize;
 
     while (totalSamples > 0) {
         // Wait for DMA to latch current buffer
@@ -232,12 +224,13 @@ void AudioI2S::playTone(uint16_t frequency, uint16_t duration_ms, uint8_t volume
         // Swap to other buffer and prepare next chunk WHILE current chunk is playing
         swapBuffers();
         chunkSize = min(totalSamples, (uint32_t)AUDIO_BUFFER_SIZE);
-        generateTone(frequency, chunkSize, volume);
+        generateTone(frequency, chunkSize, volume, played, toneTotalSamples);
 
         // Queue next buffer (will be latched when current buffer finishes)
         startTransfer(chunkSize, false);
 
         totalSamples -= chunkSize;
+        played += chunkSize;
     }
 
     // Wait for last chunk to finish

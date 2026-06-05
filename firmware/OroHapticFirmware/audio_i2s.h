@@ -39,6 +39,7 @@
 #define SAMPLE_RATE 32000           // 32kHz sample rate
 #define AUDIO_BUFFER_SIZE 256       // Sample buffer size (adjust for memory vs latency)
 #define MAX_TONE_DURATION_MS 2000   // Maximum tone duration to prevent blocking
+#define TONE_FADE_SAMPLES 128       // ~4ms raised-cosine fade in/out per tone to prevent edge clicks
 
 class AudioI2S {
 public:
@@ -116,6 +117,7 @@ private:
     uint8_t currentBufferIndex = 0;            // 0 or 1
     bool initialized = false;
     bool playing = false;
+    float tonePhase = 0.0f;                    // continuous sine phase across a tone's chunks (radians)
 
     /**
      * Configure nRF52840 I2S peripheral registers
@@ -123,12 +125,17 @@ private:
     void configureI2S();
 
     /**
-     * Generate sine wave samples in buffer
-     * @param frequency Frequency in Hz
-     * @param samples Number of samples to generate
-     * @param volume Volume (0-100)
+     * Generate sine wave samples for one chunk of a tone, using a continuous phase accumulator
+     * (no per-chunk phase reset → no mid-tone clicks) and a raised-cosine fade in/out at the
+     * tone's ends (no edge clicks). Reset tonePhase to 0 at the start of each tone.
+     * @param frequency    Frequency in Hz
+     * @param samples      Number of samples to generate in this chunk
+     * @param volume       Volume (0-100)
+     * @param globalOffset This chunk's start position within the whole tone (for the envelope)
+     * @param totalSamples Total samples in the whole tone (for the envelope)
      */
-    void generateTone(uint16_t frequency, uint16_t samples, uint8_t volume);
+    void generateTone(uint16_t frequency, uint16_t samples, uint8_t volume,
+                      uint32_t globalOffset, uint32_t totalSamples);
 
     /**
      * Start I2S DMA transfer
