@@ -105,10 +105,14 @@ data class OroUiState(
                 startChecks.filter { it.isBlocking }.all { it.isPassed }
 
     /**
-     * True while a Session is live (Standby/Active/Paused) — the coach is locked to the Training
-     * screen and may only leave via a deliberate Abort (ADR-0019). Mirrors
-     * [TrainingSessionState.isActive]; named separately so call sites read as intent.
+     * True from the moment the coach presses Start (Starting) until the Session ends — i.e. for
+     * every live status (Starting/Standby/Active/Paused); false only for Idle and Completed. While
+     * locked the coach is held on the Training screen and may leave only via a deliberate Abort
+     * (ADR-0019). Deliberately BROADER than [TrainingSessionState.isActive] (which excludes the brief
+     * Starting configuring transient): devices are being configured over BLE during Starting, so
+     * navigating away then would let the Session arm on another screen.
      */
     val isNavigationLocked: Boolean
-        get() = trainingSession.isActive
+        get() = trainingSession.status != TrainingStatus.Idle &&
+                trainingSession.status != TrainingStatus.Completed
 }

@@ -20,7 +20,8 @@ class OroUiStateLockTest {
     }
 
     @Test
-    fun `locked in standby active and paused`() {
+    fun `locked while a session is live`() {
+        assertTrue(stateWith(TrainingStatus.Starting).isNavigationLocked)
         assertTrue(stateWith(TrainingStatus.Standby).isNavigationLocked)
         assertTrue(stateWith(TrainingStatus.Active).isNavigationLocked)
         assertTrue(stateWith(TrainingStatus.Paused).isNavigationLocked)
