@@ -402,13 +402,8 @@ void AudioI2S::startTransfer(uint16_t sampleCount, bool isFirstChunk) {
     // STEREO mode: 1 word per sample (L+R packed in 32 bits)
     NRF_I2S->RXTXD.MAXCNT = sampleCount;
 
-    Serial.print(isFirstChunk ? "Starting" : "Updating");
-    Serial.print(" I2S: ");
-    Serial.print(sampleCount);
-    Serial.print(" samples, buffer ");
-    Serial.print(currentBufferIndex);
-    Serial.print(" @ 0x");
-    Serial.println((uint32_t)currentBuffer, HEX);
+    // Per-chunk debug print silenced (ADR-0020): it fired ~125x/sec during playback, flooding the
+    // serial link (and blocking when a monitor is attached, skewing timing).
 
     // Clear events
     NRF_I2S->EVENTS_TXPTRUPD = 0;
@@ -426,8 +421,7 @@ void AudioI2S::startTransfer(uint16_t sampleCount, bool isFirstChunk) {
 void AudioI2S::swapBuffers() {
     currentBufferIndex = 1 - currentBufferIndex;
     currentBuffer = (currentBufferIndex == 0) ? audioBuffer0 : audioBuffer1;
-    Serial.print("Swapped to buffer ");
-    Serial.println(currentBufferIndex);
+    // Per-chunk debug print silenced (ADR-0020) — see startTransfer note.
 }
 
 void AudioI2S::setServiceCallback(void (*cb)()) {
@@ -455,7 +449,7 @@ void AudioI2S::waitForBufferLatch() {
     // before we start modifying the old buffer (500μs = ~8 samples at 16kHz)
     delayMicroseconds(500);
 
-    Serial.println("Buffer latched by DMA");
+    // Per-chunk "Buffer latched by DMA" print silenced (ADR-0020) — it flooded the serial link.
 }
 
 void AudioI2S::waitForFinalChunk(uint16_t sampleCount) {
