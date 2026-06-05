@@ -36,6 +36,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
 
@@ -57,6 +58,10 @@ class MainViewModel(
 
     private val _uiState = MutableStateFlow(OroUiState())
     val uiState: StateFlow<OroUiState> = _uiState.asStateFlow()
+
+    // The "session complete" → "stand by for results" → Crew Roll-Call coroutine (ADR-0017).
+    // Held so an Abort can cancel it before the delayed Roll-Call fires (ADR-0019).
+    private var endOfSessionJob: Job? = null
 
     // Stroke analytics engine
     val strokeAnalyzer = StrokeAnalyzer()
@@ -540,7 +545,7 @@ class MainViewModel(
     private fun playEndOfSessionSequence(rollCall: com.orotrain.oro.model.CrewRollCall) {
         broadcastAudioPrompt(BleManager.AUDIO_SESSION_COMPLETE, 100)
         if (rollCall.seats.isNotEmpty()) bleManager?.broadcastRollCallLoad(rollCall)
-        viewModelScope.launch {
+        endOfSessionJob = viewModelScope.launch {
             delay(SESSION_COMPLETE_TO_STANDBY_MS)
             broadcastAudioPrompt(BleManager.AUDIO_STANDBY_FOR_RESULTS, 100)
             delay(STANDBY_TO_ROLLCALL_MS)
@@ -1102,6 +1107,8 @@ class MainViewModel(
     }
 
     fun stopTrainingSession() {
+        endOfSessionJob?.cancel()   // ADR-0019: a stray Roll-Call must never fire after a stop
+        endOfSessionJob = null
         speedProvider?.stop()
         _uiState.update { it.copy(canoeSpeedKmh = null) }   // clear the coach speed indicator (ADR-0018)
         val state = _uiState.value
@@ -1151,6 +1158,25 @@ class MainViewModel(
                 it.copy(trainingSession = TrainingSessionState())
             }
         }
+    }
+
+    /**
+     * Abort (ADR-0019): the coach ends the Session early via "End Session". Plays a short stop cue
+     * on every paddle so the crew knows it stopped on purpose, then runs the clean stop — which
+     * saves the partial Session but produces NO Session Outcome and NO Crew Roll-Call. The cue lives
+     * here, on the Abort path only, so natural completion never plays it.
+     */
+    fun abortTrainingSession() {
+        if (!_uiState.value.trainingSession.isActive) return
+        // Stop cue: a beep + a distinct triple-click haptic, on all paddles (Pacer included).
+        broadcastAudioPrompt(BleManager.AUDIO_SET_CHANGEOVER_BEEP, 100)
+        bleManager?.broadcastHaptic(
+            command = BleManager.CMD_SINGLE_PULSE,
+            pattern = BleManager.PATTERN_TRIPLE_CLICK,
+            intensity = 100,
+            includePacer = true
+        )
+        stopTrainingSession()
     }
 
     override fun onCleared() {
