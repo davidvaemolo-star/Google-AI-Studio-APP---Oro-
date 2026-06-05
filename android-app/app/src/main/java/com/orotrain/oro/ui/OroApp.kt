@@ -1,13 +1,20 @@
 package com.orotrain.oro.ui
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.orotrain.oro.MainViewModel
@@ -24,6 +31,7 @@ fun OroApp(
     viewModel: MainViewModel
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
+    var showEndConfirm by remember { mutableStateOf(false) }
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
@@ -32,7 +40,8 @@ fun OroApp(
                 current = state.destination,
                 onSelect = viewModel::setDestination,
                 connectedCount = state.connectedDevicesCount,
-                maxDevices = MAX_DEVICES
+                maxDevices = MAX_DEVICES,
+                locked = state.isNavigationLocked
             )
         }
     ) { padding ->
@@ -96,7 +105,30 @@ fun OroApp(
                     onStartTraining = viewModel::startTrainingSession,
                     onPauseTraining = viewModel::pauseTrainingSession,
                     onResumeTraining = viewModel::resumeTrainingSession,
-                    onStopTraining = viewModel::stopTrainingSession
+                    onStopTraining = { showEndConfirm = true }
+                )
+            }
+
+            // While a Session is live, the system Back gesture pops the End Session confirmation
+            // instead of leaving the screen (ADR-0019).
+            BackHandler(enabled = state.isNavigationLocked) {
+                showEndConfirm = true
+            }
+
+            if (showEndConfirm) {
+                AlertDialog(
+                    onDismissRequest = { showEndConfirm = false },
+                    title = { Text("End Session?") },
+                    text = { Text("End this Session early? The crew won't get a roll-call.") },
+                    confirmButton = {
+                        TextButton(onClick = {
+                            showEndConfirm = false
+                            viewModel.abortTrainingSession()
+                        }) { Text("End Session") }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = { showEndConfirm = false }) { Text("Keep Going") }
+                    }
                 )
             }
         }
