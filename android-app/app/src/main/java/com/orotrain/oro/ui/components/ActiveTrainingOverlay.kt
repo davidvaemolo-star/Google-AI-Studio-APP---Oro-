@@ -234,7 +234,7 @@ fun ActiveTrainingOverlay(
                             Spacer(modifier = Modifier.width(16.dp))
                         }
 
-                        // Stop button
+                        // End Session button — opens the Abort confirmation (ADR-0019).
                         Button(
                             onClick = onStop,
                             colors = ButtonDefaults.buttonColors(
@@ -244,10 +244,10 @@ fun ActiveTrainingOverlay(
                         ) {
                             Icon(
                                 imageVector = Icons.Rounded.Stop,
-                                contentDescription = "Stop training"
+                                contentDescription = "End session"
                             )
                             Spacer(modifier = Modifier.width(8.dp))
-                            Text("Stop")
+                            Text("End Session")
                         }
                     }
 
