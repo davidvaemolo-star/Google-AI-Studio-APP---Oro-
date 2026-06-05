@@ -143,6 +143,10 @@ _Avoid_: armed, ready (Ready is a device-level term), waiting, starting (Startin
 Formerly the synchronised start signal (tones + a "go" buzz so the crew's first **Catch** was together, ADR-0008). Replaced by **Standby**: the Session now begins on the Pacer's first Catch rather than on a synchronised go, so there is no pre-stroke countdown. Term kept only so older references resolve.
 _Avoid_: using as a live concept — it no longer fires
 
+**Abort**:
+Ending a **Session** deliberately before its Zones are finished, by the coach pressing **End Session**. Distinct from natural **completion**: an Abort stops every device, gives a short stop cue (a brief beep + haptic on each paddle so the crew knows it stopped on purpose), and produces **no Session Outcome and no Crew Roll-Call** — the read-out is earned only by completing the programme. The partial Session is still saved. While a Session is live the coach is **locked** to the Training screen; Abort is the only exit.
+_Avoid_: cancel, quit, stop (the on-screen action is "End Session"); using it for natural completion
+
 ### Tools
 
 **Configuration Planner**:
