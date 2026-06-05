@@ -377,6 +377,12 @@ struct StrokeDetectionState {
   float restBaseline;            // Device's resting accelY, subtracted from readings (tare) — ADR-0012
 };
 
+// The Arduino loop() task handle, captured in setup(). The audio service hook (ADR-0020) must only
+// drive stroke detection — which reads the IMU over the non-reentrant I2C bus — from THIS task. When
+// audio is triggered from a BLE write callback (a separate FreeRTOS task), servicing detection there
+// would race loop()'s own IMU read and deadlock the I2C bus (hangs the paddle). See serviceStrokeDuringAudio.
+TaskHandle_t g_loopTaskHandle = NULL;
+
 StrokeDetectionState strokeDetection = {
   false,                         // disabled by default
   STROKE_DETECT_THRESHOLD,       // default threshold
@@ -507,8 +513,9 @@ void setup() {
     Serial.println("WARNING: Failed to initialize I2S audio - continuing without audio");
   }
   // Keep stroke detection alive while audio plays (ADR-0020): the audio driver calls this between
-  // chunks so prompts (set changeover, zone voice, the mid-set speed call-out) no longer make the
-  // paddle deaf to strokes.
+  // chunks so loop-context prompts (e.g. the mid-set speed call-out) no longer make the paddle deaf
+  // to strokes. The hook is task-guarded (see serviceStrokeDuringAudio) so it only runs on this task.
+  g_loopTaskHandle = xTaskGetCurrentTaskHandle();  // setup() runs on the Arduino loop task
   audioPlayer.setServiceCallback(serviceStrokeDuringAudio);
   if (externalAudio.begin()) {
     Serial.println("External audio ready (Crew Roll-Call clips on QSPI).");
@@ -2027,6 +2034,11 @@ void powerOff() {
 // spin doesn't over-call the IMU read. Detection only emits a non-blocking BLE notify and starts no
 // audio, so there is no reentrancy back into the audio path.
 void serviceStrokeDuringAudio() {
+  // CRITICAL (ADR-0020 hang fix): only drive detection when this hook is invoked from the loop()
+  // task. Audio triggered by a BLE write callback runs on a SEPARATE FreeRTOS task; servicing the
+  // IMU (I2C) here would race loop()'s own read and deadlock the bus. In that case loop() is running
+  // concurrently and handles detection itself, so standing down here loses nothing.
+  if (xTaskGetCurrentTaskHandle() != g_loopTaskHandle) return;
   if (!strokeDetection.enabled) return;
   static unsigned long lastServiceMs = 0;
   unsigned long now = millis();
